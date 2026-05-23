@@ -9,7 +9,8 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
+    statusBarIconBrightness: Brightness.dark,
+    statusBarBrightness: Brightness.light,
   ));
   runApp(const ProviderScope(child: MyApp()));
 }
@@ -22,7 +23,7 @@ class MyApp extends ConsumerWidget {
     final router = ref.watch(routerProvider);
     final themeMode = ref.watch(themeModeProvider);
     return MaterialApp.router(
-      title: 'AI Trợ lý Ngôn ngữ',
+      title: 'DLanguage',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,

@@ -6,6 +6,7 @@ import '../../core/api/audio_api.dart';
 import '../../core/errors/app_error.dart';
 import '../../core/theme/app_colors.dart';
 import '../../shared/providers/app_providers.dart';
+import '../../shared/widgets/main_bottom_nav.dart';
 import '../chat/pronunciation_dialog.dart';
 
 final _historyProvider =
@@ -30,9 +31,11 @@ class PronunciationScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: AppColors.background,
+      bottomNavigationBar: const MainBottomNav(currentIndex: 2),
       appBar: AppBar(
         backgroundColor: AppColors.background,
         elevation: 0,
+        automaticallyImplyLeading: false,
         title: const Text('Luyện phát âm'),
         actions: [
           IconButton(

@@ -1,387 +1,238 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../../core/errors/app_error.dart';
 import '../../core/models/language.dart';
 import '../../core/models/session.dart';
-import '../../core/models/vocabulary.dart';
+import '../../core/models/user.dart';
 import '../../core/router/app_router.dart';
 import '../../core/theme/app_colors.dart';
 import '../../shared/providers/app_providers.dart';
+import '../../shared/utils/language_enforcement.dart';
+import '../../shared/utils/session_icon.dart';
+import '../../shared/widgets/main_bottom_nav.dart';
 
 final _recentSessionsProvider =
     FutureProvider.autoDispose<List<ChatSession>>((ref) async {
   return ref.read(sessionsApiProvider).list(limit: 5);
 });
 
-final _homeVocabStatsProvider =
-    FutureProvider.autoDispose<VocabStats>((ref) async {
-  return ref.read(vocabularyApiProvider).getStats();
-});
-
-/// Quick Start item — gắn với 1 template trong DB qua `templateName`.
-/// Khi tạo session, frontend tìm template theo name → dùng template_id để
-/// session kế thừa system_prompt + out_of_scope_examples + cefr_level từ DB
-/// (đồng nhất với khi user vào màn Templates và chọn). Tránh tình trạng
-/// Quick Start dùng prompt cứng khác với Templates.
-///
-/// `contextPrompt` chỉ là fallback nếu không tìm thấy template khớp tên
-/// (vd template bị xoá / DB không seed).
-class _QuickStartItem {
+/// Gợi ý chủ đề — 6 lựa chọn nhanh, hiển thị 3 đầu trên Home.
+/// `templateName` khớp với `templates.name` trong DB → frontend tìm
+/// template_id để session kế thừa system_prompt + scope + cefr_level.
+/// `contextPrompt` chỉ fallback nếu DB không có template khớp.
+class _TopicSuggestion {
   final String emoji;
   final String title;
-  final String subtitle;
-  final String templateName;   // match `templates.name` trong DB
-  final String contextPrompt;  // fallback nếu không tìm thấy template
-  final String defaultLanguage;
-  final LinearGradient gradient;
-
-  const _QuickStartItem({
+  final String hint;
+  final String templateName;
+  final String contextPrompt;
+  final String defaultLang;
+  const _TopicSuggestion({
     required this.emoji,
     required this.title,
-    required this.subtitle,
+    required this.hint,
     required this.templateName,
     required this.contextPrompt,
-    required this.defaultLanguage,
-    required this.gradient,
+    required this.defaultLang,
   });
 }
 
-const _quickStartItems = <_QuickStartItem>[
-  _QuickStartItem(
-    emoji: '💬',
-    title: 'Hội thoại tự do',
-    subtitle: 'Trò chuyện về cuộc sống hàng ngày',
+const _topics = <_TopicSuggestion>[
+  _TopicSuggestion(
+    emoji: '☕',
+    title: 'Gọi cà phê',
+    hint: 'Beginner · 5 phút',
     templateName: 'Hội thoại tự do',
-    contextPrompt: 'Hãy trò chuyện tự nhiên với tôi về cuộc sống hàng ngày.',
-    defaultLanguage: 'vi',
-    gradient: AppColors.cardGradient1,
-  ),
-  _QuickStartItem(
-    emoji: '🌍',
-    title: 'Luyện tiếng Anh',
-    subtitle: 'Conversation practice',
-    templateName: 'Luyện hội thoại',
     contextPrompt:
-        'Let\'s practice English conversation. Correct my mistakes gently.',
-    defaultLanguage: 'en',
-    gradient: AppColors.cardGradient2,
+        'Hãy đóng vai nhân viên quán cà phê. Tôi sẽ luyện gọi món bằng tiếng Anh.',
+    defaultLang: 'en',
   ),
-  _QuickStartItem(
-    emoji: '📝',
-    title: 'Dịch thuật',
-    subtitle: 'Dịch văn bản đa ngôn ngữ',
-    templateName: 'Dịch thuật',
+  _TopicSuggestion(
+    emoji: '🏥',
+    title: 'Đi khám bệnh',
+    hint: 'B1 · 8 phút',
+    templateName: 'Hội thoại tự do',
     contextPrompt:
-        'Bạn là chuyên gia dịch thuật. Hãy dịch văn bản tôi đưa ra.',
-    defaultLanguage: 'vi',
-    gradient: AppColors.cardGradient3,
+        'Hãy đóng vai bác sĩ. Tôi sẽ luyện kể triệu chứng bằng tiếng Anh.',
+    defaultLang: 'en',
   ),
-  _QuickStartItem(
-    emoji: '✍️',
-    title: 'Viết & Sửa văn',
-    subtitle: 'Cải thiện văn phong',
-    templateName: 'Góp ý bài viết',
-    contextPrompt:
-        'Bạn là biên tập viên. Giúp tôi cải thiện văn phong, ngữ pháp.',
-    defaultLanguage: 'vi',
-    gradient: AppColors.cardGradient4,
-  ),
-  _QuickStartItem(
-    emoji: '📚',
-    title: 'Học từ vựng',
-    subtitle: 'Mở rộng vốn từ',
-    templateName: 'Xây dựng từ vựng',
-    contextPrompt:
-        'Hãy giúp tôi học từ vựng mới: giải thích nghĩa, ví dụ.',
-    defaultLanguage: 'vi',
-    gradient: AppColors.cardGradient5,
-  ),
-  _QuickStartItem(
-    emoji: '🎯',
+  _TopicSuggestion(
+    emoji: '🎓',
     title: 'Phỏng vấn',
-    subtitle: 'Luyện phỏng vấn xin việc',
+    hint: 'B2 · 12 phút',
     templateName: 'Nhập vai hội thoại',
     contextPrompt:
-        'Bạn là chuyên gia tuyển dụng. Đặt câu hỏi phỏng vấn cho tôi.',
-    defaultLanguage: 'vi',
-    gradient: AppColors.cardGradient6,
+        'Hãy đóng vai HR phỏng vấn vị trí entry-level bằng tiếng Anh.',
+    defaultLang: 'en',
+  ),
+  _TopicSuggestion(
+    emoji: '✈️',
+    title: 'Du lịch',
+    hint: 'A2 · 6 phút',
+    templateName: 'Hội thoại tự do',
+    contextPrompt:
+        'Hãy đóng vai nhân viên sân bay. Tôi luyện check-in chuyến bay.',
+    defaultLang: 'en',
+  ),
+  _TopicSuggestion(
+    emoji: '💼',
+    title: 'Họp công việc',
+    hint: 'B1 · 10 phút',
+    templateName: 'Nhập vai hội thoại',
+    contextPrompt: 'Hãy mở đầu một buổi họp ngắn với đồng nghiệp bằng tiếng Anh.',
+    defaultLang: 'en',
+  ),
+  _TopicSuggestion(
+    emoji: '🛍️',
+    title: 'Mua sắm',
+    hint: 'A2 · 5 phút',
+    templateName: 'Hội thoại tự do',
+    contextPrompt:
+        'Hãy đóng vai nhân viên cửa hàng. Tôi luyện hỏi giá, đổi size.',
+    defaultLang: 'en',
   ),
 ];
+
+// emoji + flag mapping moved to shared/utils/session_icon.dart
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    ref.watch(themeModeProvider);  // subscribe để rebuild khi đổi theme
     final recent = ref.watch(_recentSessionsProvider);
-    final stats = ref.watch(_homeVocabStatsProvider);
-    // Pre-fetch danh sách ngôn ngữ ngay khi vào home, tránh spinner khi mở bottom sheet
-    ref.watch(languagesProvider);
+    final me = ref.watch(meProvider);
+    ref.watch(languagesProvider); // pre-fetch
+
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(gradient: AppColors.backgroundGradient),
-        child: SafeArea(
-          child: RefreshIndicator(
-            color: AppColors.primaryLight,
-            onRefresh: () async {
-              ref.invalidate(_recentSessionsProvider);
-              ref.invalidate(_homeVocabStatsProvider);
-              await Future.wait([
-                ref.read(_recentSessionsProvider.future),
-                ref.read(_homeVocabStatsProvider.future),
-              ]);
-            },
-            child: CustomScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              slivers: [
-                _buildHeader(context, ref, stats),
-                // TODAY section — chỉ render khi user có data (>= 1 từ trong sổ tay
-                // hoặc có session gần đây). Hide hẳn khi user mới đăng ký.
-                SliverToBoxAdapter(
-                  child: _TodaySection(
-                    stats: stats,
-                    recent: recent,
+      backgroundColor: const Color(0xFFF7F5F0), // cream nhẹ, tone v1
+      body: SafeArea(
+        bottom: false,
+        child: RefreshIndicator(
+          color: AppColors.primary,
+          onRefresh: () async {
+            ref.invalidate(_recentSessionsProvider);
+            ref.invalidate(meProvider);
+            await ref.read(_recentSessionsProvider.future);
+          },
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _Greeting(me: me),
+                  const SizedBox(height: 20),
+                  _HeroCard(
+                    onChat: () => _startFreeChat(context, ref),
+                    onVoice: () => _startFreeChat(context, ref, voice: true),
                   ),
-                ),
-                const SliverPadding(
-                  padding: EdgeInsets.fromLTRB(20, 24, 20, 12),
-                  sliver: SliverToBoxAdapter(
-                    child: _SectionHeader(title: 'Khám phá chủ đề'),
+                  const SizedBox(height: 28),
+                  _SectionHeader(
+                    title: 'Gợi ý chủ đề',
+                    actionLabel: 'Tất cả',
+                    onAction: () => context.push(AppRoutes.templates),
                   ),
-                ),
-                SliverPadding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  sliver: SliverGrid(
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      mainAxisSpacing: 14,
-                      crossAxisSpacing: 14,
-                      childAspectRatio: 0.95,
-                    ),
-                    delegate: SliverChildBuilderDelegate(
-                      (context, i) {
-                        final item = _quickStartItems[i];
-                        return _QuickStartCard(
-                          item: item,
-                          onTap: () => _startQuickSession(context, ref, item),
-                        );
-                      },
-                      // Chỉ hiển thị 4 Quick Start đầu (gọn home, còn lại
-                      // user vào màn "Mẫu hội thoại" để xem đầy đủ)
-                      childCount: _quickStartItems.length > 4
-                          ? 4
-                          : _quickStartItems.length,
-                    ),
+                  const SizedBox(height: 12),
+                  _TopicRow(
+                    onTap: (t) => _startTopic(context, ref, t),
                   ),
-                ),
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(20, 28, 20, 12),
-                  sliver: SliverToBoxAdapter(
-                    child: _SectionHeader(
-                      title: 'Hội thoại gần đây',
-                      action: TextButton(
-                        onPressed: () => context.push(AppRoutes.sessions),
-                        child: const Text('Xem tất cả',
-                            style: TextStyle(color: AppColors.primaryLight)),
-                      ),
-                    ),
-                  ),
-                ),
-                recent.when(
-                  loading: () => const SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Center(
-                        child: CircularProgressIndicator(
-                            color: AppColors.primaryLight),
-                      ),
-                    ),
-                  ),
-                  error: (e, _) => SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Text(
-                        e is AppError ? e.message : 'Lỗi tải hội thoại',
-                        style: const TextStyle(color: AppColors.error),
-                      ),
-                    ),
-                  ),
-                  data: (sessions) {
-                    if (sessions.isEmpty) {
-                      return const SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.symmetric(
-                              horizontal: 20, vertical: 24),
-                          child: _EmptyState(),
-                        ),
-                      );
-                    }
-                    return SliverPadding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      sliver: SliverList(
-                        delegate: SliverChildBuilderDelegate(
-                          (context, i) => Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: _SessionTile(session: sessions[i]),
-                          ),
-                          childCount: sessions.length,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                const SliverToBoxAdapter(child: SizedBox(height: 90)),
-              ],
+                  const SizedBox(height: 28),
+                  _SectionHeader(title: 'Tiếp tục từ hôm qua'),
+                  const SizedBox(height: 12),
+                  _ContinueCard(recent: recent),
+                  const SizedBox(height: 16),
+                ],
+              ),
             ),
           ),
         ),
       ),
-      bottomNavigationBar: _BottomNav(currentIndex: 0),
+      bottomNavigationBar: const MainBottomNav(currentIndex: 0),
     );
   }
 
-  Widget _buildHeader(
+  // ============================================================
+  // Actions
+  // ============================================================
+  Future<void> _startFreeChat(
     BuildContext context,
-    WidgetRef ref,
-    AsyncValue<VocabStats> stats,
-  ) {
-    final streakDays = stats.maybeWhen(
-      data: (s) => s.streakDays,
-      orElse: () => 0,
-    );
-    return SliverToBoxAdapter(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-        child: Row(
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                gradient: AppColors.primaryGradient,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(Icons.auto_awesome,
-                  color: Colors.white, size: 22),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Xin chào 👋',
-                      style: TextStyle(
-                          fontSize: 13, color: AppColors.textSecondary)),
-                  SizedBox(height: 2),
-                  Text('AI Trợ lý Ngôn ngữ',
-                      style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textPrimary)),
-                ],
-              ),
-            ),
-            // Streak badge — chỉ hiện khi streak >= 1; bấm vào → Stats screen
-            if (streakDays > 0) ...[
-              InkWell(
-                borderRadius: BorderRadius.circular(20),
-                onTap: () => context.push(AppRoutes.stats),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: AppColors.accent.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                        color: AppColors.accent.withValues(alpha: 0.4)),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('🔥', style: TextStyle(fontSize: 14)),
-                      const SizedBox(width: 4),
-                      Text('$streakDays',
-                          style: const TextStyle(
-                              color: AppColors.accent,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 13)),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-            IconButton(
-              tooltip: 'Thống kê',
-              onPressed: () => context.push(AppRoutes.stats),
-              icon: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(Icons.bar_chart,
-                    color: AppColors.textPrimary, size: 22),
-              ),
-            ),
-            IconButton(
-              onPressed: () => context.push(AppRoutes.profile),
-              icon: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(Icons.person_outline,
-                    color: AppColors.textPrimary, size: 22),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _startQuickSession(
-    BuildContext context,
-    WidgetRef ref,
-    _QuickStartItem item,
-  ) async {
-    final lang = await _pickLanguage(context, ref, item.defaultLanguage);
+    WidgetRef ref, {
+    bool voice = false,
+  }) async {
+    final me = ref.read(meProvider).valueOrNull;
+    final defaultLang = me?.preferredLanguage ?? 'en';
+    final lang = await _pickLanguage(context, ref, defaultLang);
     if (lang == null || !context.mounted) return;
+    await _createAndOpenSession(
+      context,
+      ref,
+      title: voice ? 'Trò chuyện bằng giọng nói' : 'Trò chuyện tự do',
+      lang: lang,
+      templateName: 'Hội thoại tự do',
+      contextPrompt: 'Hãy trò chuyện tự nhiên cùng tôi.',
+    );
+  }
 
+  Future<void> _startTopic(
+    BuildContext context,
+    WidgetRef ref,
+    _TopicSuggestion topic,
+  ) async {
+    final me = ref.read(meProvider).valueOrNull;
+    final defaultLang = me?.preferredLanguage ?? topic.defaultLang;
+    final lang = await _pickLanguage(context, ref, defaultLang);
+    if (lang == null || !context.mounted) return;
+    await _createAndOpenSession(
+      context,
+      ref,
+      title: topic.title,
+      lang: lang,
+      templateName: topic.templateName,
+      contextPrompt: topic.contextPrompt,
+    );
+  }
+
+  Future<void> _createAndOpenSession(
+    BuildContext context,
+    WidgetRef ref, {
+    required String title,
+    required String lang,
+    required String templateName,
+    required String contextPrompt,
+  }) async {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(
-          child: CircularProgressIndicator(color: AppColors.primaryLight)),
+      builder: (_) =>
+          const Center(child: CircularProgressIndicator(color: AppColors.primary)),
     );
-
-    // Tìm template trong DB theo name. Nếu match → dùng template_id (kế thừa
-    // system_prompt + out_of_scope_examples + cefr_level). Nếu không có thì
-    // fallback contextPrompt cứng.
     String? templateId;
     try {
       final templates =
           await ref.read(templatesApiProvider).list(limit: 100);
       final match = templates
-          .where((t) => t.name == item.templateName)
+          .where((t) => t.name == templateName)
           .cast<dynamic>()
           .firstOrNull;
       if (match != null) templateId = match.id as String;
-    } catch (_) {
-      // Silent fail → fallback contextPrompt
-    }
+    } catch (_) {}
 
     try {
+      // contextPrompt = câu lệnh ép ngôn ngữ + role-play nhập vai. Lệnh ép
+      // ngôn ngữ đặt TRƯỚC để model gặp đầu tiên → tăng tỉ lệ Layer 1 thành
+      // công với gemma2:2b khi topic gây bias (vd "Họp công việc" tiếng Anh).
       final session = await ref.read(sessionsApiProvider).create(
             templateId: templateId,
-            title: item.title,
+            title: title,
             responseLanguage: lang,
-            contextPrompt: templateId == null ? item.contextPrompt : null,
+            contextPrompt: buildContextPrompt(
+              langCode: lang,
+              rolePlay: contextPrompt,
+            ),
           );
       if (!context.mounted) return;
       Navigator.of(context).pop();
@@ -405,93 +256,106 @@ class HomeScreen extends ConsumerWidget {
   ) async {
     return showModalBottomSheet<String>(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (ctx) {
         return SafeArea(
           child: Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
             child: Consumer(
               builder: (ctx, ref, _) {
                 final langs = ref.watch(languagesProvider);
                 return Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 40,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: AppColors.border,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                Text('Chọn ngôn ngữ trả lời',
-                    style: TextStyle(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE6E4EC),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      'Chọn ngôn ngữ trả lời',
+                      style: GoogleFonts.beVietnamPro(
                         fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary)),
-                const SizedBox(height: 16),
-                langs.when(
-                  loading: () => const Padding(
-                    padding: EdgeInsets.all(20),
-                    child: Center(
-                        child: CircularProgressIndicator(
-                            color: AppColors.primaryLight)),
-                  ),
-                  error: (_, _) => Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: const [
-                      _LangChipFallback(code: 'vi', label: '🇻🇳 Tiếng Việt'),
-                      _LangChipFallback(code: 'en', label: '🇬🇧 English'),
-                    ],
-                  ),
-                  data: (list) {
-                    final items = list.cast<Language>();
-                    if (items.isEmpty) {
-                      return Text('Không có ngôn ngữ',
-                          style: TextStyle(color: AppColors.textSecondary));
-                    }
-                    return Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: items.map((l) {
-                        final selected = l.code == defaultLang;
-                        return GestureDetector(
-                          onTap: () => Navigator.of(ctx).pop(l.code),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 10),
-                            decoration: BoxDecoration(
-                              gradient:
-                                  selected ? AppColors.primaryGradient : null,
-                              color: selected ? null : AppColors.surfaceCard,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: selected
-                                    ? Colors.transparent
-                                    : AppColors.border,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.navy,
+                        letterSpacing: -0.4,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    langs.when(
+                      loading: () => const Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Center(
+                            child: CircularProgressIndicator(
+                                color: AppColors.primary)),
+                      ),
+                      error: (_, _) => Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _langChipFallback(ctx, 'vi', '🇻🇳 Tiếng Việt'),
+                          _langChipFallback(ctx, 'en', '🇬🇧 English'),
+                        ],
+                      ),
+                      data: (list) {
+                        final items = list.cast<Language>();
+                        return Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: items.map((l) {
+                            final sel = l.code == defaultLang;
+                            final flag = flagForLanguageCode(l.code);
+                            return InkWell(
+                              onTap: () => Navigator.of(ctx).pop(l.code),
+                              borderRadius: BorderRadius.circular(20),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 10),
+                                decoration: BoxDecoration(
+                                  color: sel ? AppColors.primary : Colors.white,
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: sel
+                                        ? AppColors.primary
+                                        : const Color(0xFFE6E4EC),
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(flag,
+                                        style: const TextStyle(fontSize: 16)),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      l.nativeName,
+                                      style: GoogleFonts.beVietnamPro(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: sel
+                                            ? Colors.white
+                                            : AppColors.navy,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                            ),
-                            child: Text(
-                              '${l.flag} ${l.nativeName}',
-                              style: TextStyle(
-                                  color: AppColors.textPrimary,
-                                  fontWeight: FontWeight.w500),
-                            ),
-                          ),
+                            );
+                          }).toList(),
                         );
-                      }).toList(),
-                    );
-                  },
-                ),
-                const SizedBox(height: 8),
-              ],
-            );
+                      },
+                    ),
+                  ],
+                );
               },
             ),
           ),
@@ -499,183 +363,282 @@ class HomeScreen extends ConsumerWidget {
       },
     );
   }
-}
 
-/// Section "HÔM NAY" — feature DIFFERENTIATING vs ChatGPT.
-/// Hiển thị: review queue card + stats row + resume last session.
-/// Tự ẩn hoàn toàn khi user chưa có data (chưa lưu từ + chưa có session).
-// ==========================================================
-// Smart TODAY card — gộp 3 card (Review / Pronunciation / Resume) → 1
-// Decide CTA dựa trên state:
-//   1. Có due vocab → ưu tiên ôn từ
-//   2. Else có session gần đây → tiếp tục session
-//   3. Else (user mới) → bắt đầu chat
-// Stats mini row + Pronunciation entry đã có ở Profile + Bottom nav,
-// không lặp ở Home nữa để giữ giao diện tập trung 1 CTA chính.
-// ==========================================================
-class _TodaySection extends StatelessWidget {
-  final AsyncValue<VocabStats> stats;
-  final AsyncValue<List<ChatSession>> recent;
-  const _TodaySection({required this.stats, required this.recent});
-
-  @override
-  Widget build(BuildContext context) {
-    final vocabStats = stats.value;
-    final recentList = recent.value;
-    final hasDue = (vocabStats?.dueNow ?? 0) > 0;
-    final hasRecent = (recentList ?? []).isNotEmpty;
-    final hasVocab = (vocabStats?.total ?? 0) > 0;
-
-    // User hoàn toàn mới → hide section, để Quick Start làm CTA
-    if (!hasVocab && !hasRecent) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: _SmartTodayCard(
-        hasDue: hasDue,
-        dueCount: vocabStats?.dueNow ?? 0,
-        reviewedToday: vocabStats?.reviewedToday ?? 0,
-        recentSession: hasRecent ? recentList!.first : null,
+  Widget _langChipFallback(BuildContext ctx, String code, String label) {
+    return InkWell(
+      onTap: () => Navigator.of(ctx).pop(code),
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFE6E4EC)),
+        ),
+        child: Text(label,
+            style: GoogleFonts.beVietnamPro(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: AppColors.navy,
+            )),
       ),
     );
   }
 }
 
-class _SmartTodayCard extends StatelessWidget {
-  final bool hasDue;
-  final int dueCount;
-  final int reviewedToday;
-  final ChatSession? recentSession;
+// ============================================================
+// Widgets
+// ============================================================
 
-  const _SmartTodayCard({
-    required this.hasDue,
-    required this.dueCount,
-    required this.reviewedToday,
-    required this.recentSession,
+class _Greeting extends StatelessWidget {
+  final AsyncValue<User> me;
+  const _Greeting({required this.me});
+
+  String _hourGreeting() {
+    final h = DateTime.now().hour;
+    if (h < 11) return 'Sẵn sàng học chưa?';
+    if (h < 14) return 'Bữa trưa nhẹ nhàng?';
+    if (h < 18) return 'Học chút buổi chiều?';
+    return 'Tối nay luyện gì?';
+  }
+
+  String _firstName(User? u) {
+    final full = (u?.fullName ?? u?.username ?? '').trim();
+    if (full.isEmpty) return 'bạn';
+    final parts = full.split(RegExp(r'\s+'));
+    return parts.last;
+  }
+
+  String _avatarText(User? u) {
+    final full = (u?.fullName ?? u?.username ?? '').trim();
+    if (full.isEmpty) return 'B';
+    final parts = full.split(RegExp(r'\s+'));
+    if (parts.length == 1) return parts[0].substring(0, 1).toUpperCase();
+    return (parts.first.substring(0, 1) + parts.last.substring(0, 1))
+        .toUpperCase();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = me.valueOrNull;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _hourGreeting(),
+                style: GoogleFonts.beVietnamPro(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: const Color(0xFF5C5870),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Hi ${_firstName(user)} 👋',
+                style: GoogleFonts.beVietnamPro(
+                  fontSize: 26,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.6,
+                  color: AppColors.navy,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        InkWell(
+          onTap: () => GoRouter.of(context).go(AppRoutes.profile),
+          borderRadius: BorderRadius.circular(20),
+          child: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              gradient: AppColors.primaryGradient,
+              borderRadius: BorderRadius.circular(14),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              _avatarText(user),
+              style: GoogleFonts.beVietnamPro(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HeroCard extends StatelessWidget {
+  final VoidCallback onChat;
+  final VoidCallback onVoice;
+  const _HeroCard({required this.onChat, required this.onVoice});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
+      decoration: BoxDecoration(
+        color: AppColors.navy,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.navy.withValues(alpha: 0.20),
+            offset: const Offset(0, 14),
+            blurRadius: 30,
+          ),
+        ],
+      ),
+      child: Stack(
+        children: [
+          // Concentric circles deco — góc phải trên
+          Positioned(
+            right: -40,
+            top: -40,
+            child: _Concentric(),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'BẮT ĐẦU NGAY',
+                style: GoogleFonts.beVietnamPro(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.6,
+                  color: AppColors.primaryLight,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Trò chuyện\nvới trợ lý AI',
+                style: GoogleFonts.beVietnamPro(
+                  fontSize: 26,
+                  fontWeight: FontWeight.w800,
+                  height: 1.15,
+                  letterSpacing: -0.7,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Nói chuyện tự nhiên — AI sửa lỗi, gợi ý từ vựng theo trình độ.',
+                style: GoogleFonts.beVietnamPro(
+                  fontSize: 13,
+                  height: 1.5,
+                  color: Colors.white.withValues(alpha: 0.72),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: _HeroBtn(
+                      icon: Icons.chat_bubble_rounded,
+                      label: 'Nhắn tin',
+                      filled: true,
+                      onTap: onChat,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _HeroBtn(
+                      icon: Icons.mic_rounded,
+                      label: 'Gọi voice',
+                      filled: false,
+                      onTap: onVoice,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Concentric extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final c = Colors.white.withValues(alpha: 0.08);
+    return SizedBox(
+      width: 180,
+      height: 180,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          _ring(160, c),
+          _ring(120, c),
+          _ring(80, c),
+        ],
+      ),
+    );
+  }
+
+  Widget _ring(double size, Color c) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: c, width: 1.5),
+      ),
+    );
+  }
+}
+
+class _HeroBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool filled;
+  final VoidCallback onTap;
+  const _HeroBtn({
+    required this.icon,
+    required this.label,
+    required this.filled,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    // Decide content + route + gradient
-    final String title;
-    final String subtitle;
-    final IconData icon;
-    final LinearGradient gradient;
-    final VoidCallback onTap;
-    final Color shadowColor;
-
-    if (hasDue) {
-      title = '$dueCount từ cần ôn hôm nay';
-      subtitle = reviewedToday > 0
-          ? 'Đã ôn $reviewedToday từ · Tiếp tục để giữ streak'
-          : 'Chỉ vài phút để giữ trí nhớ';
-      icon = Icons.school;
-      gradient = AppColors.primaryGradient;
-      shadowColor = AppColors.primary;
-      onTap = () => context.push(AppRoutes.review);
-    } else if (recentSession != null) {
-      title = 'Tiếp tục: ${recentSession!.title}';
-      subtitle = '${recentSession!.messageCount} tin nhắn · Quay lại học';
-      icon = Icons.chat_bubble;
-      gradient = AppColors.accentGradient;
-      shadowColor = AppColors.accent;
-      onTap = () => context.push(
-            '${AppRoutes.chat}/${recentSession!.id}?title=${Uri.encodeComponent(recentSession!.title)}',
-          );
-    } else {
-      title = 'Bắt đầu hội thoại mới';
-      subtitle = 'Chọn chủ đề bên dưới · AI sẽ dạy theo ngữ cảnh';
-      icon = Icons.auto_awesome;
-      gradient = AppColors.primaryGradient;
-      shadowColor = AppColors.primary;
-      onTap = () => context.push(AppRoutes.templates);
-    }
-
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(18),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
-        child: Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            gradient: gradient,
-            borderRadius: BorderRadius.circular(18),
-            boxShadow: [
-              BoxShadow(
-                color: shadowColor.withValues(alpha: 0.28),
-                blurRadius: 20,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(15),
-                ),
-                child: Icon(icon, color: Colors.white, size: 28),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.9),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 6),
-              const Icon(Icons.arrow_forward, color: Colors.white, size: 22),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _LangChipFallback extends StatelessWidget {
-  final String code;
-  final String label;
-  const _LangChipFallback({required this.code, required this.label});
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () => Navigator.of(context).pop(code),
+    final bg = filled ? AppColors.primary : Colors.transparent;
+    final border =
+        filled ? AppColors.primary : Colors.white.withValues(alpha: 0.25);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        height: 46,
         decoration: BoxDecoration(
-          color: AppColors.surfaceCard,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.border),
+          color: bg,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: border),
         ),
-        child: Text(label,
-            style: TextStyle(color: AppColors.textPrimary)),
+        alignment: Alignment.center,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: Colors.white, size: 16),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: GoogleFonts.beVietnamPro(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -683,44 +646,92 @@ class _LangChipFallback extends StatelessWidget {
 
 class _SectionHeader extends StatelessWidget {
   final String title;
-  final Widget? action;
-  const _SectionHeader({required this.title, this.action});
+  final String? actionLabel;
+  final VoidCallback? onAction;
+  const _SectionHeader({
+    required this.title,
+    this.actionLabel,
+    this.onAction,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(title,
-            style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary)),
-        ?action,
+        Expanded(
+          child: Text(
+            title,
+            style: GoogleFonts.beVietnamPro(
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+              color: AppColors.navy,
+              letterSpacing: -0.4,
+            ),
+          ),
+        ),
+        if (actionLabel != null)
+          InkWell(
+            onTap: onAction,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              child: Text(
+                actionLabel!,
+                style: GoogleFonts.beVietnamPro(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.primaryDark,
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
 }
 
-class _QuickStartCard extends StatelessWidget {
-  final _QuickStartItem item;
-  final VoidCallback onTap;
-  const _QuickStartCard({required this.item, required this.onTap});
+class _TopicRow extends StatelessWidget {
+  final void Function(_TopicSuggestion) onTap;
+  const _TopicRow({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    // 3 chip hiển thị, cuộn ngang để xem hết
+    return SizedBox(
+      height: 148,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        itemCount: _topics.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 12),
+        itemBuilder: (_, i) => _TopicChip(topic: _topics[i], onTap: () => onTap(_topics[i])),
+      ),
+    );
+  }
+}
+
+class _TopicChip extends StatelessWidget {
+  final _TopicSuggestion topic;
+  final VoidCallback onTap;
+  const _TopicChip({required this.topic, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
       child: Container(
+        width: 138,
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          gradient: item.gradient,
+          color: Colors.white,
           borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xFFE6E4EC)),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.2),
+              color: AppColors.navy.withValues(alpha: 0.04),
+              offset: const Offset(0, 4),
               blurRadius: 12,
-              offset: const Offset(0, 6),
             ),
           ],
         ),
@@ -729,32 +740,41 @@ class _QuickStartCard extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Container(
-              width: 44,
-              height: 44,
+              width: 38,
+              height: 38,
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.25),
+                color: const Color(0xFFFFF1EC),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Center(
-                child: Text(item.emoji,
-                    style: const TextStyle(fontSize: 22)),
-              ),
+              alignment: Alignment.center,
+              child: Text(topic.emoji, style: const TextStyle(fontSize: 20)),
             ),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(item.title,
-                    style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white)),
+                Text(
+                  topic.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.beVietnamPro(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w700,
+                    height: 1.2,
+                    color: AppColors.navy,
+                  ),
+                ),
                 const SizedBox(height: 2),
-                Text(item.subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.white.withValues(alpha: 0.85))),
+                Text(
+                  topic.hint,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.beVietnamPro(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: const Color(0xFF8C879E),
+                  ),
+                ),
               ],
             ),
           ],
@@ -764,201 +784,154 @@ class _QuickStartCard extends StatelessWidget {
   }
 }
 
-class _SessionTile extends StatelessWidget {
-  final ChatSession session;
-  const _SessionTile({required this.session});
+class _ContinueCard extends StatelessWidget {
+  final AsyncValue<List<ChatSession>> recent;
+  const _ContinueCard({required this.recent});
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.surface,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: () => context.push(
-          '${AppRoutes.chat}/${session.id}?title=${Uri.encodeComponent(session.title)}',
+    return recent.when(
+      loading: () => _shell(
+        child: const Padding(
+          padding: EdgeInsets.all(20),
+          child: Center(child: CircularProgressIndicator(color: AppColors.primary)),
         ),
+      ),
+      error: (e, _) => _shell(
         child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  gradient: AppColors.primaryGradient,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(Icons.chat_bubble_outline,
-                    color: Colors.white, size: 20),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(session.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary)),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${session.messageCount} tin nhắn • ${_relativeTime(session.updatedAt)}',
-                      style: TextStyle(
-                          fontSize: 12, color: AppColors.textSecondary),
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            e is AppError ? e.message : 'Không tải được phiên gần đây',
+            style: GoogleFonts.beVietnamPro(color: AppColors.error, fontSize: 13),
+          ),
+        ),
+      ),
+      data: (sessions) {
+        if (sessions.isEmpty) {
+          return _shell(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Row(
+                children: [
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF1EC),
+                      borderRadius: BorderRadius.circular(14),
                     ),
-                  ],
-                ),
+                    alignment: Alignment.center,
+                    child: const Text('✨', style: TextStyle(fontSize: 24)),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Chưa có phiên nào',
+                            style: GoogleFonts.beVietnamPro(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.navy,
+                            )),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Chọn 1 chủ đề ở trên để bắt đầu',
+                          style: GoogleFonts.beVietnamPro(
+                            fontSize: 12,
+                            color: const Color(0xFF8C879E),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              Icon(Icons.chevron_right,
-                  color: AppColors.textTertiary, size: 22),
-            ],
+            ),
+          );
+        }
+        final s = sessions.first;
+        return _shell(
+          child: InkWell(
+            onTap: () => GoRouter.of(context).push(
+              '${AppRoutes.chat}/${s.id}?title=${Uri.encodeComponent(s.title)}',
+            ),
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF1EC),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(emojiForSessionTitle(s.title),
+                        style: const TextStyle(fontSize: 28)),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          s.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.beVietnamPro(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.navy,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          _subtitle(s),
+                          style: GoogleFonts.beVietnamPro(
+                            fontSize: 12,
+                            color: const Color(0xFF8C879E),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Icon(Icons.play_arrow_rounded,
+                        color: Colors.white, size: 22),
+                  ),
+                ],
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
-  static String _relativeTime(DateTime dt) {
-    final d = DateTime.now().difference(dt);
-    if (d.inMinutes < 1) return 'vừa xong';
-    if (d.inMinutes < 60) return '${d.inMinutes} phút trước';
-    if (d.inHours < 24) return '${d.inHours} giờ trước';
-    if (d.inDays < 7) return '${d.inDays} ngày trước';
-    return '${dt.day}/${dt.month}/${dt.year}';
+  String _subtitle(ChatSession s) {
+    final lang = s.responseLanguage.toUpperCase();
+    return '$lang · ${s.messageCount} tin nhắn';
   }
-}
 
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        children: [
-          Icon(Icons.chat_outlined,
-              size: 48, color: AppColors.textTertiary),
-          SizedBox(height: 12),
-          Text('Chưa có hội thoại nào',
-              style: TextStyle(
-                  color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w600)),
-          SizedBox(height: 4),
-          Text('Chọn một chủ đề ở trên để bắt đầu',
-              style: TextStyle(
-                  color: AppColors.textSecondary, fontSize: 13)),
-        ],
-      ),
-    );
-  }
-}
-
-class _BottomNav extends StatelessWidget {
-  final int currentIndex;
-  const _BottomNav({required this.currentIndex});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _shell({required Widget child}) {
     return Container(
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        border: Border(top: BorderSide(color: AppColors.divider)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE6E4EC)),
       ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _NavItem(
-                icon: Icons.home_outlined,
-                activeIcon: Icons.home,
-                label: 'Trang chủ',
-                active: currentIndex == 0,
-                onTap: () {},
-              ),
-              _NavItem(
-                icon: Icons.chat_bubble_outline,
-                activeIcon: Icons.chat_bubble,
-                label: 'Hội thoại',
-                active: currentIndex == 1,
-                onTap: () => context.push(AppRoutes.sessions),
-              ),
-              _NavItem(
-                icon: Icons.menu_book_outlined,
-                activeIcon: Icons.menu_book,
-                label: 'Sổ tay',
-                active: currentIndex == 2,
-                onTap: () => context.push(AppRoutes.vocabulary),
-              ),
-              _NavItem(
-                icon: Icons.dashboard_outlined,
-                activeIcon: Icons.dashboard,
-                label: 'Mẫu',
-                active: currentIndex == 3,
-                onTap: () => context.push(AppRoutes.templates),
-              ),
-              _NavItem(
-                icon: Icons.person_outline,
-                activeIcon: Icons.person,
-                label: 'Hồ sơ',
-                active: currentIndex == 4,
-                onTap: () => context.push(AppRoutes.profile),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _NavItem extends StatelessWidget {
-  final IconData icon;
-  final IconData activeIcon;
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-  const _NavItem({
-    required this.icon,
-    required this.activeIcon,
-    required this.label,
-    required this.active,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final color = active ? AppColors.primaryLight : AppColors.textTertiary;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(active ? activeIcon : icon, color: color, size: 22),
-            const SizedBox(height: 3),
-            Text(label,
-                style: TextStyle(
-                    color: color,
-                    fontSize: 11,
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w400)),
-          ],
-        ),
-      ),
+      child: child,
     );
   }
 }

@@ -12,6 +12,7 @@ import '../../core/api/stats_api.dart';
 import '../../core/audio/audio_player_service.dart';
 import '../../core/audio/voice_recorder.dart';
 import '../../core/auth/token_storage.dart';
+import '../../core/models/user.dart';
 import '../../core/theme/app_colors.dart';
 
 final tokenStorageProvider = Provider<TokenStorage>((ref) => TokenStorage());
@@ -121,6 +122,12 @@ final authStateProvider =
 
 final languagesProvider = FutureProvider<List>((ref) async {
   return ref.read(languagesApiProvider).list();
+});
+
+// User profile — global cache, dùng cho greeting / avatar / preferred_language
+// trên Home, Profile, ... Invalidate sau khi updateProfile để refresh.
+final meProvider = FutureProvider<User>((ref) async {
+  return ref.read(authApiProvider).getMe();
 });
 
 // ==========================================================

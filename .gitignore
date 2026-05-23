@@ -43,3 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Design reference HTML files (Claude design canvas exports — large embedded fonts).
+# Chỉ là tham khảo, không phải source code. web/index.html vẫn được track.
+/*.html

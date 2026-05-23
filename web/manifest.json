@@ -1,11 +1,11 @@
 {
-    "name": "flutter_application_1",
-    "short_name": "flutter_application_1",
+    "name": "DLanguage",
+    "short_name": "DLanguage",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F2F2F7",
+    "theme_color": "#FF6B47",
+    "description": "Trợ lý AI học ngoại ngữ — 12 ngôn ngữ, luyện hội thoại, chấm phát âm.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

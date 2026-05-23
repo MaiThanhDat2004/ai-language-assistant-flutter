@@ -13,6 +13,7 @@ import '../../core/models/vocabulary.dart';
 import '../../core/router/app_router.dart';
 import '../../core/theme/app_colors.dart';
 import '../../shared/providers/app_providers.dart';
+import '../../shared/widgets/main_bottom_nav.dart';
 
 final _meProvider = FutureProvider.autoDispose<User>((ref) async {
   return ref.read(authApiProvider).getMe();
@@ -40,6 +41,7 @@ class ProfileScreen extends ConsumerWidget {
     final isDark = themeMode == ThemeMode.dark;
 
     return Scaffold(
+      bottomNavigationBar: const MainBottomNav(currentIndex: 4),
       body: Container(
         decoration: BoxDecoration(gradient: AppColors.backgroundGradient),
         child: SafeArea(
@@ -199,18 +201,15 @@ class ProfileScreen extends ConsumerWidget {
 
   Widget _buildHeader(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 16, 4),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
       child: Row(
         children: [
-          IconButton(
-            onPressed: () => context.pop(),
-            icon: Icon(Icons.arrow_back, color: AppColors.textPrimary),
-          ),
           Text('Hồ sơ',
               style: TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.w800,
-                  color: AppColors.textPrimary)),
+                  color: AppColors.textPrimary,
+                  letterSpacing: -0.5)),
         ],
       ),
     );

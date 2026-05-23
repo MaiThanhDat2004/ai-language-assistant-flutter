@@ -6,6 +6,8 @@ import '../../core/models/session.dart';
 import '../../core/router/app_router.dart';
 import '../../core/theme/app_colors.dart';
 import '../../shared/providers/app_providers.dart';
+import '../../shared/utils/session_icon.dart';
+import '../../shared/widgets/main_bottom_nav.dart';
 
 final _sessionsListProvider =
     FutureProvider.autoDispose<List<ChatSession>>((ref) async {
@@ -20,6 +22,7 @@ class SessionsScreen extends ConsumerWidget {
     ref.watch(themeModeProvider);  // subscribe để rebuild khi đổi theme
     final sessions = ref.watch(_sessionsListProvider);
     return Scaffold(
+      bottomNavigationBar: const MainBottomNav(currentIndex: 1),
       body: Container(
         decoration: BoxDecoration(gradient: AppColors.backgroundGradient),
         child: SafeArea(
@@ -75,18 +78,15 @@ class SessionsScreen extends ConsumerWidget {
 
   Widget _buildHeader(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
       child: Row(
         children: [
-          IconButton(
-            onPressed: () => context.pop(),
-            icon: Icon(Icons.arrow_back, color: AppColors.textPrimary),
-          ),
           Text('Hội thoại',
               style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary)),
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textPrimary,
+                  letterSpacing: -0.5)),
         ],
       ),
     );
@@ -197,14 +197,17 @@ class _SessionTile extends StatelessWidget {
           child: Row(
             children: [
               Container(
-                width: 44,
-                height: 44,
+                width: 48,
+                height: 48,
                 decoration: BoxDecoration(
-                  gradient: AppColors.primaryGradient,
-                  borderRadius: BorderRadius.circular(12),
+                  color: const Color(0xFFFFF1EC),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                child: const Icon(Icons.chat_bubble_outline,
-                    color: Colors.white, size: 20),
+                alignment: Alignment.center,
+                child: Text(
+                  emojiForSession(session),
+                  style: const TextStyle(fontSize: 26),
+                ),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -219,10 +222,17 @@ class _SessionTile extends StatelessWidget {
                             fontWeight: FontWeight.w600,
                             color: AppColors.textPrimary)),
                     const SizedBox(height: 4),
-                    Text(
-                      '${session.messageCount} tin nhắn',
-                      style: TextStyle(
-                          fontSize: 12, color: AppColors.textSecondary),
+                    Row(
+                      children: [
+                        Text(flagForLanguageCode(session.responseLanguage),
+                            style: const TextStyle(fontSize: 12)),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${session.messageCount} tin nhắn',
+                          style: TextStyle(
+                              fontSize: 12, color: AppColors.textSecondary),
+                        ),
+                      ],
                     ),
                   ],
                 ),

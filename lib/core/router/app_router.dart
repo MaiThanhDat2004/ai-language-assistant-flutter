@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/register_screen.dart';
 import '../../features/auth/splash_screen.dart';
+import '../../features/auth/welcome_screen.dart';
 import '../../features/chat/chat_screen.dart';
 import '../../features/home/home_screen.dart';
 import '../../features/profile/profile_screen.dart';
@@ -17,6 +18,7 @@ import '../../shared/providers/app_providers.dart';
 
 class AppRoutes {
   static const splash = '/';
+  static const welcome = '/welcome';
   static const login = '/login';
   static const register = '/register';
   static const home = '/home';
@@ -43,11 +45,12 @@ final routerProvider = Provider<GoRouter>((ref) {
       }
       // Bootstrap xong: splash phải đi tiếp
       if (loc == AppRoutes.splash) {
-        return auth.isAuthenticated ? AppRoutes.home : AppRoutes.login;
+        return auth.isAuthenticated ? AppRoutes.home : AppRoutes.welcome;
       }
-      final isAuthRoute =
-          loc == AppRoutes.login || loc == AppRoutes.register;
-      if (!auth.isAuthenticated && !isAuthRoute) return AppRoutes.login;
+      final isAuthRoute = loc == AppRoutes.welcome ||
+          loc == AppRoutes.login ||
+          loc == AppRoutes.register;
+      if (!auth.isAuthenticated && !isAuthRoute) return AppRoutes.welcome;
       if (auth.isAuthenticated && isAuthRoute) return AppRoutes.home;
       return null;
     },
@@ -55,6 +58,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: AppRoutes.splash,
         builder: (_, _) => const SplashScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.welcome,
+        builder: (_, _) => const WelcomeScreen(),
       ),
       GoRoute(
         path: AppRoutes.login,

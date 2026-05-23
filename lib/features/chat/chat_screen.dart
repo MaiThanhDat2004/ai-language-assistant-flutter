@@ -11,6 +11,8 @@ import '../../core/models/message.dart';
 import '../../core/models/vocabulary.dart';
 import '../../core/theme/app_colors.dart';
 import '../../shared/providers/app_providers.dart';
+import '../../shared/utils/chat_suggestions.dart';
+import '../../shared/utils/session_icon.dart';
 import 'pronunciation_dialog.dart';
 import 'voice_conversation_screen.dart';
 
@@ -41,12 +43,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String? _playingMessageId;
   StreamSubscription<PlayingState>? _playerSub;
 
-  static const _suggestions = [
-    'Chào bạn! Bắt đầu nào',
-    'Giúp tôi luyện tiếng Anh',
-    'Dịch câu này sang tiếng Việt',
-    'Giải thích chủ đề này cho tôi',
-  ];
+  // Suggestions giờ derive runtime từ session title + language, qua
+  // `suggestionsForSession()` trong shared/utils/chat_suggestions.dart
 
   @override
   void initState() {
@@ -748,28 +746,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Widget _buildAppBar() {
+    final flag = flagForLanguageCode(_sessionLanguage);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      padding: const EdgeInsets.fromLTRB(4, 8, 8, 8),
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppColors.divider)),
+        color: Colors.white,
+        border: Border(bottom: BorderSide(color: const Color(0xFFE6E4EC))),
       ),
       child: Row(
         children: [
           IconButton(
             onPressed: () => context.pop(),
-            icon: Icon(Icons.arrow_back, color: AppColors.textPrimary),
+            icon: const Icon(Icons.chevron_left, size: 26),
+            color: AppColors.navy,
           ),
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              gradient: AppColors.primaryGradient,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(Icons.auto_awesome,
-                color: Colors.white, size: 18),
-          ),
-          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -778,27 +768,63 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   widget.initialTitle ?? 'Hội thoại',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.navy,
+                    letterSpacing: -0.3,
+                  ),
                 ),
-                const Text('AI đang sẵn sàng',
-                    style: TextStyle(
-                        fontSize: 11, color: AppColors.success)),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Text(flag, style: const TextStyle(fontSize: 12)),
+                    const SizedBox(width: 6),
+                    Text(
+                      _sessionLanguage.toUpperCase(),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF5C5870),
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      width: 4,
+                      height: 4,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFD0CCDB),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const _LiveDot(),
+                    const SizedBox(width: 5),
+                    const Text(
+                      'Đang hoạt động',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF2A6A52),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
-          // Voice Conversation Mode — full-screen mode chat bằng giọng nói
           IconButton(
             tooltip: 'Chế độ thoại',
             onPressed: _enterVoiceMode,
-            icon: Icon(Icons.record_voice_over_outlined,
-                color: AppColors.accent),
+            icon: const Icon(Icons.mic_none_rounded,
+                color: AppColors.primary, size: 22),
           ),
           IconButton(
+            tooltip: 'Tải lại',
             onPressed: _loadHistory,
-            icon: Icon(Icons.refresh, color: AppColors.textSecondary),
+            icon: const Icon(Icons.refresh_rounded,
+                color: Color(0xFF5C5870), size: 22),
           ),
         ],
       ),
@@ -822,40 +848,81 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (_messages.isEmpty) {
       return _buildEmptyState();
     }
-    return ListView.builder(
+    // Build flat list: time divider + bubbles (+ caret cho streaming bubble)
+    // + typing dots khi chưa có token + inline suggestions sau AI cuối.
+    final items = <Widget>[];
+    items.add(_TimeDivider(time: _messages.first.createdAt));
+
+    for (int i = 0; i < _messages.length; i++) {
+      final m = _messages[i];
+      final isLast = i == _messages.length - 1;
+      // AI bubble cuối đang nhận token → render caret inline
+      final isStreaming =
+          isLast && _sending && !m.isUser && m.content.isNotEmpty;
+      // AI bubble cuối còn trống (chưa có token) → bỏ render, dùng typing dots
+      final skipEmpty =
+          isLast && _sending && !m.isUser && m.content.isEmpty;
+      if (skipEmpty) continue;
+      items.add(_MessageBubble(
+        message: m,
+        sessionLanguage: _sessionLanguage,
+        isPlaying: _playingMessageId == m.id,
+        isStreaming: isStreaming,
+        onSaveWord: () => _showSaveWordDialog(m),
+        onExtract: () => _showExtractDialog(m),
+        onPlay: () => _togglePlayMessage(m),
+        onPronounce: () => _showPronunciationDialog(m),
+      ));
+    }
+
+    // Typing dots khi đang sending mà bubble cuối còn rỗng (waiting for first token)
+    if (_sending &&
+        _messages.isNotEmpty &&
+        !_messages.last.isUser &&
+        _messages.last.content.isEmpty) {
+      items.add(const _TypingBubble());
+    }
+
+    // Inline suggestions sau AI bubble cuối — chỉ khi không stream, không refusal
+    if (!_sending && _messages.isNotEmpty) {
+      final last = _messages.last;
+      if (!last.isUser && !last.isRefusal && last.content.isNotEmpty) {
+        final suggestions = suggestionsForSession(
+          title: widget.initialTitle ?? '',
+          langCode: _sessionLanguage,
+        ).take(3).toList();
+        items.add(_InlineSuggestions(
+          suggestions: suggestions,
+          onTap: (s) => _send(s),
+        ));
+      }
+    }
+
+    return ListView(
       controller: _scrollCtrl,
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-      itemCount: _messages.length + (_sending ? 1 : 0),
-      itemBuilder: (context, i) {
-        if (i == _messages.length) return const _TypingBubble();
-        return _MessageBubble(
-          message: _messages[i],
-          sessionLanguage: _sessionLanguage,
-          isPlaying: _playingMessageId == _messages[i].id,
-          onSaveWord: () => _showSaveWordDialog(_messages[i]),
-          onExtract: () => _showExtractDialog(_messages[i]),
-          onPlay: () => _togglePlayMessage(_messages[i]),
-          onPronounce: () => _showPronunciationDialog(_messages[i]),
-        );
-      },
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      children: items,
     );
   }
 
   Widget _buildEmptyState() {
+    final suggestions = suggestionsForSession(
+      title: widget.initialTitle ?? '',
+      langCode: _sessionLanguage,
+    );
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
         children: [
           const SizedBox(height: 40),
-          Container(
-            width: 72,
-            height: 72,
-            decoration: BoxDecoration(
-              gradient: AppColors.primaryGradient,
-              borderRadius: BorderRadius.circular(20),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: Image.asset(
+              'assets/images/logo.png',
+              width: 80,
+              height: 80,
+              fit: BoxFit.cover,
             ),
-            child: const Icon(Icons.auto_awesome,
-                color: Colors.white, size: 36),
           ),
           const SizedBox(height: 16),
           Text('Hãy bắt đầu trò chuyện',
@@ -864,7 +931,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   fontWeight: FontWeight.w700,
                   color: AppColors.textPrimary)),
           const SizedBox(height: 8),
-          Text('Thử một trong các gợi ý dưới đây',
+          Text('Bấm một gợi ý để gửi ngay',
               style:
                   TextStyle(color: AppColors.textSecondary, fontSize: 13)),
           const SizedBox(height: 24),
@@ -872,7 +939,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             spacing: 10,
             runSpacing: 10,
             alignment: WrapAlignment.center,
-            children: _suggestions
+            children: suggestions
                 .map((s) => GestureDetector(
                       onTap: () => _send(s),
                       child: Container(
@@ -1009,6 +1076,7 @@ class _MessageBubble extends StatelessWidget {
   final ChatMessage message;
   final String sessionLanguage;
   final bool isPlaying;
+  final bool isStreaming;
   final VoidCallback onSaveWord;
   final VoidCallback onExtract;
   final VoidCallback onPlay;
@@ -1017,6 +1085,7 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.sessionLanguage,
     required this.isPlaying,
+    this.isStreaming = false,
     required this.onSaveWord,
     required this.onExtract,
     required this.onPlay,
@@ -1034,15 +1103,14 @@ class _MessageBubble extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (!isUser) ...[
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                gradient: AppColors.primaryGradient,
-                borderRadius: BorderRadius.circular(10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.asset(
+                'assets/images/logo.png',
+                width: 32,
+                height: 32,
+                fit: BoxFit.cover,
               ),
-              child: const Icon(Icons.auto_awesome,
-                  color: Colors.white, size: 16),
             ),
             const SizedBox(width: 8),
           ],
@@ -1103,29 +1171,48 @@ class _MessageBubble extends StatelessWidget {
                               color: AppColors.textPrimary,
                               fontSize: 14,
                               height: 1.4))
-                      : MarkdownBody(
-                          data: message.content,
-                          styleSheet: MarkdownStyleSheet(
-                            p: TextStyle(
-                                color: AppColors.textPrimary,
-                                fontSize: 14,
-                                height: 1.4),
-                            code: TextStyle(
-                                color: AppColors.primaryDark,
-                                backgroundColor:
-                                    AppColors.textPrimary.withValues(alpha: 0.06)),
-                            codeblockDecoration: BoxDecoration(
-                              color:
-                                  AppColors.textPrimary.withValues(alpha: 0.06),
-                              borderRadius: BorderRadius.circular(8),
+                      : isStreaming
+                          // Khi đang stream: render plain text + caret inline
+                          // (markdown lazy render khi xong cho mượt).
+                          ? RichText(
+                              text: TextSpan(
+                                style: TextStyle(
+                                  color: AppColors.textPrimary,
+                                  fontSize: 14,
+                                  height: 1.4,
+                                ),
+                                children: [
+                                  TextSpan(text: message.content),
+                                  const WidgetSpan(
+                                    alignment: PlaceholderAlignment.middle,
+                                    child: _StreamingCaret(),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : MarkdownBody(
+                              data: message.content,
+                              styleSheet: MarkdownStyleSheet(
+                                p: TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontSize: 14,
+                                    height: 1.4),
+                                code: TextStyle(
+                                    color: AppColors.primaryDark,
+                                    backgroundColor: AppColors.textPrimary
+                                        .withValues(alpha: 0.06)),
+                                codeblockDecoration: BoxDecoration(
+                                  color: AppColors.textPrimary
+                                      .withValues(alpha: 0.06),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                strong: TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontWeight: FontWeight.w700),
+                                listBullet: TextStyle(
+                                    color: AppColors.textPrimary, fontSize: 14),
+                              ),
                             ),
-                            strong: TextStyle(
-                                color: AppColors.textPrimary,
-                                fontWeight: FontWeight.w700),
-                            listBullet: TextStyle(
-                                color: AppColors.textPrimary, fontSize: 14),
-                          ),
-                        ),
                 ),
                 // PRIMARY CTA: Luyện phát âm — pill nổi bật, ẩn nếu refusal/text quá ngắn
                 if (!isUser && _shouldShowPronounceCta(message))
@@ -1338,15 +1425,14 @@ class _TypingBubble extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              gradient: AppColors.primaryGradient,
-              borderRadius: BorderRadius.circular(10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.asset(
+              'assets/images/logo.png',
+              width: 32,
+              height: 32,
+              fit: BoxFit.cover,
             ),
-            child: const Icon(Icons.auto_awesome,
-                color: Colors.white, size: 16),
           ),
           const SizedBox(width: 8),
           Container(
@@ -1638,6 +1724,211 @@ class _CandidateTile extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Visual effects — Live status dot, Streaming caret, Time divider,
+// Inline suggestion chips. Tách riêng để chat_screen gọn hơn.
+// ============================================================
+
+/// Chấm xanh nhấp nháy báo "AI đang sẵn sàng" trong header.
+class _LiveDot extends StatefulWidget {
+  const _LiveDot();
+  @override
+  State<_LiveDot> createState() => _LiveDotState();
+}
+
+class _LiveDotState extends State<_LiveDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1400))
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, _) {
+        return Container(
+          width: 7,
+          height: 7,
+          decoration: BoxDecoration(
+            color: const Color(0xFF2A6A52),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF2A6A52)
+                    .withValues(alpha: 0.5 * _ctrl.value),
+                blurRadius: 6 * _ctrl.value,
+                spreadRadius: 2 * _ctrl.value,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Caret nhấp nháy ở cuối AI bubble khi đang stream.
+class _StreamingCaret extends StatefulWidget {
+  const _StreamingCaret();
+  @override
+  State<_StreamingCaret> createState() => _StreamingCaretState();
+}
+
+class _StreamingCaretState extends State<_StreamingCaret>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 700))
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, _) {
+        return Opacity(
+          opacity: _ctrl.value,
+          child: Container(
+            width: 2,
+            height: 16,
+            margin: const EdgeInsets.only(left: 2),
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: BorderRadius.circular(1),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Chip thời gian giữa scroll — "Hôm nay · 10:42".
+class _TimeDivider extends StatelessWidget {
+  final DateTime time;
+  const _TimeDivider({required this.time});
+
+  String _format() {
+    final now = DateTime.now();
+    final isToday = now.year == time.year &&
+        now.month == time.month &&
+        now.day == time.day;
+    final yesterday = now.subtract(const Duration(days: 1));
+    final isYesterday = yesterday.year == time.year &&
+        yesterday.month == time.month &&
+        yesterday.day == time.day;
+    final hh = time.hour.toString().padLeft(2, '0');
+    final mm = time.minute.toString().padLeft(2, '0');
+    final dayLabel = isToday
+        ? 'Hôm nay'
+        : isYesterday
+            ? 'Hôm qua'
+            : '${time.day}/${time.month}';
+    return '$dayLabel · $hh:$mm';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Center(
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFFE6E4EC)),
+          ),
+          child: Text(
+            _format(),
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF8C879E),
+              letterSpacing: 0.2,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 3 chip gợi ý câu tiếp theo — hiện dưới AI bubble cuối khi không stream.
+/// Bấm chip → gửi luôn câu đó qua _send(text). Có thể tái dùng
+/// suggestionsForSession từ shared/utils/chat_suggestions.dart.
+class _InlineSuggestions extends StatelessWidget {
+  final List<String> suggestions;
+  final void Function(String) onTap;
+  const _InlineSuggestions({required this.suggestions, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    if (suggestions.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(40, 4, 0, 12),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: suggestions
+            .map((s) => InkWell(
+                  onTap: () => onTap(s),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFE6E4EC)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.auto_awesome,
+                            size: 12, color: AppColors.primary),
+                        const SizedBox(width: 6),
+                        Text(
+                          s,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.navy,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ))
+            .toList(),
       ),
     );
   }

@@ -6,6 +6,8 @@ import '../../core/models/template.dart';
 import '../../core/router/app_router.dart';
 import '../../core/theme/app_colors.dart';
 import '../../shared/providers/app_providers.dart';
+import '../../shared/utils/language_enforcement.dart';
+import '../../shared/widgets/language_picker_sheet.dart';
 
 final _templatesProvider =
     FutureProvider.autoDispose<List<Template>>((ref) async {
@@ -187,6 +189,14 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
 
   Future<void> _useTemplate(
       BuildContext context, WidgetRef ref, Template t) async {
+    // Hỏi ngôn ngữ trả lời trước — default = preferred_language của user nếu có,
+    // fallback về defaultResponseLanguage của template. Đồng nhất với Home flow.
+    final me = ref.read(meProvider).valueOrNull;
+    final defaultLang =
+        me?.preferredLanguage ?? t.defaultResponseLanguage;
+    final lang = await pickLanguage(context, ref, defaultLang: defaultLang);
+    if (lang == null || !context.mounted) return;
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -194,10 +204,14 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
           child: CircularProgressIndicator(color: AppColors.primary)),
     );
     try {
+      // Prepend câu lệnh ép ngôn ngữ bằng CHÍNH ngôn ngữ đích — bổ sung Layer 1
+      // langdetect retry để model nhỏ (gemma2:2b) không bị bias sang English khi
+      // chủ đề học thuật là English (vd template "Chuyên gia ngữ pháp").
       final session = await ref.read(sessionsApiProvider).create(
             templateId: t.id,
             title: t.name,
-            responseLanguage: t.defaultResponseLanguage,
+            responseLanguage: lang,
+            contextPrompt: languageEnforcement(lang),
           );
       if (!context.mounted) return;
       Navigator.of(context).pop();
