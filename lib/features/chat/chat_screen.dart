@@ -42,6 +42,39 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   // Audio playback state — chỉ track messageId đang play để hightlight đúng bubble
   String? _playingMessageId;
   StreamSubscription<PlayingState>? _playerSub;
+  // Layer 4 — Grammar correction state per user message id
+  // status: loading | loaded (has_error=true) | none (has_error=false hoặc fail)
+  final Map<String, _CorrectionState> _corrections = {};
+
+  // Layer 4 trigger — sau khi stream Done, fetch correction cho user message
+  // Lazy + best-effort: fail/none thì im lặng. Luôn giữ data để dùng cả
+  // correction card (khi has_error) lẫn next_suggestions (mọi trường hợp).
+  Future<void> _fetchCorrection(String userMessageId) async {
+    setState(() {
+      _corrections[userMessageId] =
+          const _CorrectionState(status: _CorrectionStatus.loading);
+    });
+    try {
+      final c = await ref.read(chatApiProvider).getCorrection(userMessageId);
+      if (!mounted) return;
+      setState(() {
+        // status=loaded chỉ điều khiển render CARD (only when has_error).
+        // data luôn lưu để nextSuggestions vẫn dùng được khi has_error=false.
+        _corrections[userMessageId] = _CorrectionState(
+          status: c.hasError
+              ? _CorrectionStatus.loaded
+              : _CorrectionStatus.none,
+          data: c,
+        );
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _corrections[userMessageId] =
+            const _CorrectionState(status: _CorrectionStatus.none);
+      });
+    }
+  }
 
   // Suggestions giờ derive runtime từ session title + language, qua
   // `suggestionsForSession()` trong shared/utils/chat_suggestions.dart
@@ -668,6 +701,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 createdAt: _messages[_messages.length - 1].createdAt,
               );
             });
+            // Layer 4 — Lazy fetch correction cho user message (best-effort,
+            // không block UX). Skip nếu refusal (AI từ chối → không cần sửa
+            // câu user).
+            if (streamInScope != false && userMessageId.isNotEmpty) {
+              _fetchCorrection(userMessageId);
+            }
           case ChatStreamError(:final error):
             errorHandled = true;
             // Bỏ user + AI bubble đang stream
@@ -873,6 +912,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         onPlay: () => _togglePlayMessage(m),
         onPronounce: () => _showPronunciationDialog(m),
       ));
+      // Layer 4 — Card "GỢI Ý SỬA" dưới user bubble nếu correction đã load
+      if (m.isUser) {
+        final st = _corrections[m.id];
+        if (st != null) {
+          if (st.status == _CorrectionStatus.loading) {
+            items.add(const _CorrectionSkeleton());
+          } else if (st.status == _CorrectionStatus.loaded &&
+              st.data != null) {
+            items.add(_CorrectionCard(correction: st.data!));
+          }
+        }
+      }
     }
 
     // Typing dots khi đang sending mà bubble cuối còn rỗng (waiting for first token)
@@ -883,14 +934,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       items.add(const _TypingBubble());
     }
 
-    // Inline suggestions sau AI bubble cuối — chỉ khi không stream, không refusal
+    // Inline suggestions sau AI bubble cuối — chỉ khi không stream, không refusal.
+    // ƯU TIÊN next_suggestions từ correction (context-aware theo AI vừa trả lời).
+    // Fallback suggestionsForSession nếu correction chưa load / empty.
     if (!_sending && _messages.isNotEmpty) {
       final last = _messages.last;
       if (!last.isUser && !last.isRefusal && last.content.isNotEmpty) {
-        final suggestions = suggestionsForSession(
-          title: widget.initialTitle ?? '',
-          langCode: _sessionLanguage,
-        ).take(3).toList();
+        // Tìm user message gần nhất TRƯỚC AI bubble cuối để lấy correction
+        ChatMessage? lastUser;
+        for (int i = _messages.length - 2; i >= 0; i--) {
+          if (_messages[i].isUser) {
+            lastUser = _messages[i];
+            break;
+          }
+        }
+        List<String> suggestions = [];
+        if (lastUser != null) {
+          final st = _corrections[lastUser.id];
+          if (st?.data != null && st!.data!.nextSuggestions.isNotEmpty) {
+            suggestions = st.data!.nextSuggestions.take(3).toList();
+          }
+        }
+        // Fallback nếu chưa có correction (đang load hoặc lần đầu load history)
+        if (suggestions.isEmpty) {
+          suggestions = suggestionsForSession(
+            title: widget.initialTitle ?? '',
+            langCode: _sessionLanguage,
+          ).take(3).toList();
+        }
         items.add(_InlineSuggestions(
           suggestions: suggestions,
           onTap: (s) => _send(s),
@@ -1730,6 +1801,17 @@ class _CandidateTile extends StatelessWidget {
 }
 
 // ============================================================
+// Layer 4 — Grammar correction state types
+// ============================================================
+enum _CorrectionStatus { loading, loaded, none }
+
+class _CorrectionState {
+  final _CorrectionStatus status;
+  final MessageCorrection? data;
+  const _CorrectionState({required this.status, this.data});
+}
+
+// ============================================================
 // Visual effects — Live status dot, Streaming caret, Time divider,
 // Inline suggestion chips. Tách riêng để chat_screen gọn hơn.
 // ============================================================
@@ -1929,6 +2011,227 @@ class _InlineSuggestions extends StatelessWidget {
                   ),
                 ))
             .toList(),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Layer 4 — Grammar correction card
+// ============================================================
+
+/// Skeleton 2-line khi đang fetch correction (LLM ~2-3s).
+class _CorrectionSkeleton extends StatefulWidget {
+  const _CorrectionSkeleton();
+  @override
+  State<_CorrectionSkeleton> createState() => _CorrectionSkeletonState();
+}
+
+class _CorrectionSkeletonState extends State<_CorrectionSkeleton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1100))
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(48, 4, 0, 12),
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (_, _) {
+          final shade = Color.lerp(
+            const Color(0xFFFFE5DC),
+            const Color(0xFFFFD0BD),
+            _ctrl.value,
+          )!;
+          return Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF5EF),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFFFE0D0)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.auto_fix_high,
+                        size: 14, color: AppColors.primary),
+                    const SizedBox(width: 6),
+                    Text(
+                      'AI đang chấm câu...',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.primaryDark,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Container(height: 10, color: shade),
+                const SizedBox(height: 6),
+                Container(
+                    height: 10,
+                    width: MediaQuery.of(context).size.width * 0.4,
+                    color: shade),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Card "GỢI Ý SỬA" hiển thị diff word-level dưới user bubble.
+/// - Dòng 1 (wrong): segments type=keep + remove, "remove" gạch ngang đỏ
+/// - Dòng 2 (corrected): segments type=keep + add, "add" highlight coral
+/// - Explanation phụ ở dưới
+class _CorrectionCard extends StatelessWidget {
+  final MessageCorrection correction;
+  const _CorrectionCard({required this.correction});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(48, 4, 0, 12),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF5EF),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFFFE0D0)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.auto_fix_high,
+                    size: 14, color: AppColors.primary),
+                const SizedBox(width: 6),
+                Text(
+                  'GỢI Ý SỬA',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primaryDark,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            // Dòng wrong: keep + remove
+            _DiffLine(
+              segments: correction.diff
+                  .where((s) => !s.isAdd)
+                  .toList(),
+              isWrong: true,
+            ),
+            const SizedBox(height: 6),
+            // Dòng corrected: keep + add
+            _DiffLine(
+              segments: correction.diff
+                  .where((s) => !s.isRemove)
+                  .toList(),
+              isWrong: false,
+            ),
+            if (correction.explanation.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                height: 1,
+                color: const Color(0xFFFFE0D0),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                correction.explanation,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: Color(0xFF5C5870),
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffLine extends StatelessWidget {
+  final List<CorrectionSegment> segments;
+  final bool isWrong;
+  const _DiffLine({required this.segments, required this.isWrong});
+
+  @override
+  Widget build(BuildContext context) {
+    final baseStyle = TextStyle(
+      fontSize: 14,
+      height: 1.4,
+      color: AppColors.navy,
+      fontWeight: FontWeight.w500,
+    );
+    return RichText(
+      text: TextSpan(
+        style: baseStyle,
+        children: segments.map((s) {
+          if (s.isKeep) {
+            return TextSpan(text: s.text);
+          }
+          if (s.isRemove && isWrong) {
+            return TextSpan(
+              text: s.text,
+              style: const TextStyle(
+                color: Color(0xFFB23A20),
+                decoration: TextDecoration.lineThrough,
+                decorationColor: Color(0xFFB23A20),
+                decorationThickness: 2,
+                fontWeight: FontWeight.w600,
+              ),
+            );
+          }
+          if (s.isAdd && !isWrong) {
+            return WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  s.text,
+                  style: TextStyle(
+                    color: AppColors.primaryDark,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            );
+          }
+          return const TextSpan(text: '');
+        }).toList(),
       ),
     );
   }

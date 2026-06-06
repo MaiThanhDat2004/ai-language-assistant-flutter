@@ -77,14 +77,31 @@ class _VoiceConversationScreenState
 
   late final AnimationController _pulseCtrl;
 
+  // Theo dõi duration cuộc gọi. Dùng ValueNotifier thay vì Timer +
+  // setState để CHỈ widget hiển thị duration rebuild — không phải toàn
+  // screen (tránh kéo theo 44 waveform bars rebuild mỗi giây).
+  late final DateTime _callStartedAt;
+  final ValueNotifier<int> _elapsedSeconds = ValueNotifier(0);
+  Timer? _callTimer;
+
   @override
   void initState() {
     super.initState();
     ref.watch;  // ensure ref accessible
+    // KHÔNG auto-repeat. Chỉ chạy khi state=listening hoặc speaking để
+    // tránh waveform AnimatedBuilder ticks 60fps liên tục (gây lag toàn app).
     _pulseCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
-    )..repeat(reverse: true);
+    );
+    // Track call duration. Update ValueNotifier mỗi giây — CHỈ widget bind
+    // vào _elapsedSeconds rebuild (duration text), không phải toàn screen.
+    _callStartedAt = DateTime.now();
+    _callTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      _elapsedSeconds.value =
+          DateTime.now().difference(_callStartedAt).inSeconds;
+    });
     // Bắt đầu listening ngay
     WidgetsBinding.instance.addPostFrameCallback((_) => _startListening());
   }
@@ -97,6 +114,9 @@ class _VoiceConversationScreenState
     _silenceTimer = null;
     _ampSub?.cancel();
     _ampSub = null;
+    _callTimer?.cancel();
+    _callTimer = null;
+    _elapsedSeconds.dispose();
     _pulseCtrl.dispose();
     // Fire-and-forget — không await vì dispose phải sync trả về
     final rec = ref.read(voiceRecorderProvider);
@@ -105,6 +125,20 @@ class _VoiceConversationScreenState
     }
     ref.read(audioPlayerServiceProvider).stop().catchError((_) {});
     super.dispose();
+  }
+
+  // ==========================================================
+  // Pulse animation chỉ chạy khi listening/speaking — tránh AnimatedBuilder
+  // rebuild waveform 60fps liên tục khi UI idle (root cause lag toàn app).
+  // ==========================================================
+  void _syncPulse() {
+    final shouldRun = _state == _VoiceState.listening ||
+        _state == _VoiceState.speaking;
+    if (shouldRun) {
+      if (!_pulseCtrl.isAnimating) _pulseCtrl.repeat(reverse: true);
+    } else {
+      if (_pulseCtrl.isAnimating) _pulseCtrl.stop();
+    }
   }
 
   // ==========================================================
@@ -126,6 +160,7 @@ class _VoiceConversationScreenState
       _errorMsg = null;
       _userHasSpoken = false;
     });
+    _syncPulse();
 
     final rec = ref.read(voiceRecorderProvider);
     // Phòng trường hợp record cũ còn chạy
@@ -188,6 +223,7 @@ class _VoiceConversationScreenState
       return;
     }
     setState(() => _state = _VoiceState.transcribing);
+    _syncPulse();
 
     final rec = ref.read(voiceRecorderProvider);
     final api = ref.read(audioApiProvider);
@@ -227,6 +263,7 @@ class _VoiceConversationScreenState
         _userTranscript = userText;
         _state = _VoiceState.thinking;
       });
+      _syncPulse();
 
       // Gửi qua chat stream — contract enforcement vẫn áp ở đây
       String aiContent = '';
@@ -244,7 +281,23 @@ class _VoiceConversationScreenState
           case ChatStreamToken(:final content):
             aiContent += content;
             setState(() => _aiText = aiContent);
-          case ChatStreamDone():
+          case ChatStreamDone(:final userMessageId):
+            // Layer 4 — Fire-and-forget grammar correction. KHÔNG show UI
+            // trong voice mode (giữ fluidity) nhưng vẫn trigger backend để
+            // warm DB cache. Sau này nếu user vào chat history xem lại,
+            // correction_json đã có sẵn trong messages table.
+            if (!wasRefusal && userMessageId.isNotEmpty) {
+              chatApi.getCorrection(userMessageId).catchError(
+                (_) => const MessageCorrection(
+                  hasError: false,
+                  wrong: '',
+                  corrected: '',
+                  diff: [],
+                  explanation: '',
+                  nextSuggestions: [],
+                ),
+              );
+            }
             break;
           case ChatStreamError(:final error):
             _setError('Lỗi LLM: $error');
@@ -269,6 +322,7 @@ class _VoiceConversationScreenState
 
       // TTS
       setState(() => _state = _VoiceState.speaking);
+      _syncPulse();
       try {
         final audioBytes = await api.textToSpeech(
           text: aiContent,
@@ -310,6 +364,7 @@ class _VoiceConversationScreenState
       _state = _VoiceState.error;
       _errorMsg = msg;
     });
+    _syncPulse();
   }
 
   Future<void> _retry() async {
@@ -333,249 +388,399 @@ class _VoiceConversationScreenState
   // ==========================================================
   @override
   Widget build(BuildContext context) {
-    ref.watch(themeModeProvider);  // theme rebuild
+    ref.watch(themeModeProvider);
 
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(gradient: AppColors.backgroundGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildHeader(context),
-              Expanded(child: _buildCenter()),
-              _buildHistoryStrip(),
-              _buildBottomBar(),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeader(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
-      child: Row(
-        children: [
-          IconButton(
-            onPressed: () => Navigator.of(context).pop(),
-            icon: Icon(Icons.close, color: AppColors.textPrimary),
-          ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(widget.sessionTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700)),
-                Text('Chế độ thoại · ${widget.languageCode.toUpperCase()}',
-                    style: TextStyle(
-                        color: AppColors.textSecondary, fontSize: 11)),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCenter() {
-    final (label, color, icon) = switch (_state) {
-      _VoiceState.idle => ('Đang chuẩn bị...', AppColors.textSecondary, Icons.hourglass_empty),
-      _VoiceState.listening => ('Đang nghe bạn nói...', AppColors.primary, Icons.mic),
-      _VoiceState.transcribing => ('Đang nhận diện...', AppColors.primaryLight, Icons.graphic_eq),
-      _VoiceState.thinking => ('AI đang nghĩ...', AppColors.warning, Icons.psychology),
-      _VoiceState.speaking => ('AI đang trả lời...', AppColors.success, Icons.volume_up),
-      _VoiceState.error => ('Có lỗi xảy ra', AppColors.error, Icons.error_outline),
-    };
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24),
+      backgroundColor: const Color(0xFFF7F5F0),
+      body: SafeArea(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Avatar pulse
-            AnimatedBuilder(
-              animation: _pulseCtrl,
-              builder: (context, _) {
-                final pulseScale = _state == _VoiceState.listening ||
-                        _state == _VoiceState.speaking
-                    ? 1.0 + (_pulseCtrl.value * 0.15)
-                    : 1.0;
-                return Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    if (_state == _VoiceState.listening ||
-                        _state == _VoiceState.speaking)
-                      Container(
-                        width: 180 * pulseScale,
-                        height: 180 * pulseScale,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: color.withValues(alpha: 0.15),
-                        ),
-                      ),
-                    Container(
-                      width: 140,
-                      height: 140,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: AppColors.primaryGradient,
-                        boxShadow: [
-                          BoxShadow(
-                            color: color.withValues(alpha: 0.35),
-                            blurRadius: 28,
-                            offset: const Offset(0, 12),
-                          ),
-                        ],
-                      ),
-                      child: Icon(icon, color: Colors.white, size: 56),
-                    ),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: 28),
-            Text(
-              label,
-              style: TextStyle(
-                color: color,
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.3,
-              ),
-            ),
-            const SizedBox(height: 20),
-            // Live transcript hoặc AI text
-            if (_state == _VoiceState.error && _errorMsg != null) ...[
-              Text(
-                _errorMsg!,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: AppColors.error, fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _retry,
-                icon: const Icon(Icons.refresh, size: 16),
-                label: const Text('Thử lại'),
-              ),
-            ] else if (_aiText.isNotEmpty) ...[
-              Container(
-                constraints: const BoxConstraints(maxHeight: 200),
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.chatBubbleAi,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: SingleChildScrollView(
-                  child: Text(
-                    _aiText,
-                    style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 14,
-                        height: 1.5),
-                  ),
-                ),
-              ),
-            ] else if (_userTranscript.isNotEmpty) ...[
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: AppColors.chatBubbleUser,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Text(
-                  _userTranscript,
-                  style: TextStyle(
-                      color: AppColors.textPrimary, fontSize: 14),
-                ),
-              ),
-            ],
+            _buildHeader(context),
+            Expanded(child: _buildCenter()),
+            _buildBottomBar(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildHistoryStrip() {
-    if (_turns.isEmpty) return const SizedBox.shrink();
-    return Container(
-      height: 64,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: _turns.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (_, i) {
-          final t = _turns[i];
-          return Container(
-            constraints: const BoxConstraints(maxWidth: 180),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: t.wasRefusal
-                  ? AppColors.warning.withValues(alpha: 0.12)
-                  : AppColors.surfaceLight,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: t.wasRefusal
-                    ? AppColors.warning.withValues(alpha: 0.4)
-                    : AppColors.border,
-                width: 0.5,
-              ),
-            ),
+  static String _fmtDuration(int totalSeconds) {
+    final mm = (totalSeconds ~/ 60).toString().padLeft(2, '0');
+    final ss = (totalSeconds % 60).toString().padLeft(2, '0');
+    return '$mm:$ss';
+  }
+
+  Widget _buildHeader(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 8, 16, 12),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.close_rounded,
+                color: AppColors.navy, size: 24),
+          ),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  '👤 ${t.user}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  'CUỘC GỌI VOICE',
                   style: TextStyle(
-                      color: AppColors.textSecondary, fontSize: 10),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primaryDark,
+                    letterSpacing: 1.4,
+                  ),
                 ),
-                Text(
-                  '🤖 ${t.ai}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500),
+                const SizedBox(height: 2),
+                // CHỈ Text này rebuild khi _elapsedSeconds đổi (1 lần/giây).
+                // Không kéo theo waveform/section rebuild → giải lag.
+                ValueListenableBuilder<int>(
+                  valueListenable: _elapsedSeconds,
+                  builder: (_, s, _) => Text(
+                    _fmtDuration(s),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.navy,
+                      letterSpacing: -0.4,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
                 ),
               ],
             ),
-          );
-        },
+          ),
+          _LiveChip(active: _state != _VoiceState.error),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCenter() {
+    if (_state == _VoiceState.error && _errorMsg != null) {
+      return _buildErrorView();
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+      child: Column(
+        children: [
+          // AI section — chiếm khoảng nửa trên
+          Expanded(child: _buildAiSection()),
+          const SizedBox(height: 12),
+          // User section — nửa dưới
+          Expanded(child: _buildUserSection()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline,
+                color: AppColors.error, size: 56),
+            const SizedBox(height: 12),
+            Text(
+              _errorMsg ?? 'Có lỗi xảy ra',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.error,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _retry,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('Thử lại'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAiSection() {
+    final isSpeaking = _state == _VoiceState.speaking;
+    final isThinking = _state == _VoiceState.thinking;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE6E4EC)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Trạng thái chip
+          if (isSpeaking)
+            _StatusChip(
+              icon: Icons.auto_awesome,
+              label: 'AI đang nói',
+              color: AppColors.primary,
+            )
+          else if (isThinking)
+            _StatusChip(
+              icon: Icons.psychology,
+              label: 'AI đang nghĩ...',
+              color: const Color(0xFFB23A20),
+            )
+          else
+            _StatusChip(
+              icon: Icons.mic_none_rounded,
+              label: 'AI đang lắng nghe',
+              color: const Color(0xFF8C879E),
+            ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: SingleChildScrollView(
+              child: Text(
+                _aiText.isEmpty
+                    ? (isThinking
+                        ? 'Đang chuẩn bị câu trả lời...'
+                        : 'Hãy nói gì đó để bắt đầu cuộc trò chuyện.')
+                    : '"$_aiText"',
+                style: TextStyle(
+                  color: _aiText.isEmpty
+                      ? const Color(0xFF8C879E)
+                      : AppColors.navy,
+                  fontSize: 15,
+                  height: 1.5,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          _VoiceWaveform(
+            active: isSpeaking,
+            color: AppColors.primary,
+            pulseCtrl: _pulseCtrl,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUserSection() {
+    final isListening = _state == _VoiceState.listening;
+    final isTranscribing = _state == _VoiceState.transcribing;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF5EF),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFFFE0D0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: isListening
+                      ? AppColors.primary
+                      : const Color(0xFFD0CCDB),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                isListening
+                    ? 'ĐANG NGHE BẠN NÓI'
+                    : isTranscribing
+                        ? 'ĐANG NHẬN DIỆN...'
+                        : 'BẠN VỪA NÓI',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.4,
+                  color: AppColors.primaryDark,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _VoiceWaveform(
+            active: isListening,
+            color: AppColors.primary,
+            pulseCtrl: _pulseCtrl,
+            barCount: 28,
+            barHeight: 52,
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: SingleChildScrollView(
+              child: Text(
+                _userTranscript.isEmpty
+                    ? (isListening
+                        ? 'Mic đang mở, hãy nói tự nhiên...'
+                        : 'Chưa có câu nói nào.')
+                    : '"$_userTranscript"',
+                style: TextStyle(
+                  color: _userTranscript.isEmpty
+                      ? const Color(0xFF8C879E)
+                      : AppColors.navy,
+                  fontSize: 14,
+                  height: 1.5,
+                  fontStyle: _userTranscript.isEmpty
+                      ? FontStyle.italic
+                      : FontStyle.normal,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildBottomBar() {
+    final isListening = _state == _VoiceState.listening;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: () => Navigator.of(context).pop(),
-              icon: const Icon(Icons.stop, size: 18),
-              label: const Text('Thoát chế độ thoại'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14)),
+          _SideControl(
+            icon: Icons.history_rounded,
+            label: 'Lịch sử',
+            onTap: _turns.isEmpty ? null : () => _showHistorySheet(context),
+          ),
+          // Mic to giữa — bấm để thoát call (giống "kết thúc cuộc gọi")
+          GestureDetector(
+            onTap: () => Navigator.of(context).pop(),
+            child: Container(
+              width: 72,
+              height: 72,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.primary,
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(alpha: 0.40),
+                    offset: const Offset(0, 8),
+                    blurRadius: 20,
+                  ),
+                ],
+              ),
+              child: Icon(
+                isListening
+                    ? Icons.mic_rounded
+                    : Icons.call_end_rounded,
+                color: Colors.white,
+                size: 32,
               ),
             ),
           ),
+          _SideControl(
+            icon: Icons.settings_rounded,
+            label: 'Chế độ',
+            onTap: () => _showModeSheet(context),
+          ),
         ],
+      ),
+    );
+  }
+
+  void _showHistorySheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE6E4EC),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Text(
+                'Lịch sử cuộc gọi',
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.navy,
+                ),
+              ),
+              const SizedBox(height: 12),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 360),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: _turns.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (_, i) {
+                    final t = _turns[i];
+                    return Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: t.wasRefusal
+                            ? const Color(0xFFFFF4E0)
+                            : const Color(0xFFF7F5F0),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: t.wasRefusal
+                              ? const Color(0xFFFFD89C)
+                              : const Color(0xFFE6E4EC),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('👤 ${t.user}',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFF5C5870))),
+                          const SizedBox(height: 4),
+                          Text('🤖 ${t.ai}',
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  color: AppColors.navy,
+                                  fontWeight: FontWeight.w500)),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showModeSheet(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Tuỳ chọn chế độ — đang phát triển'),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -590,4 +795,349 @@ class _VoiceTurn {
     required this.ai,
     required this.wasRefusal,
   });
+}
+
+// ============================================================
+// UI helper widgets cho voice screen
+// ============================================================
+
+/// Chip Live xanh forest nhấp nháy ở header.
+class _LiveChip extends StatefulWidget {
+  final bool active;
+  const _LiveChip({required this.active});
+  @override
+  State<_LiveChip> createState() => _LiveChipState();
+}
+
+class _LiveChipState extends State<_LiveChip>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1200))
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: widget.active
+            ? const Color(0xFFE6F4ED)
+            : const Color(0xFFF0EFF4),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+            color: widget.active
+                ? const Color(0xFFB9DCC9)
+                : const Color(0xFFE6E4EC)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (widget.active)
+            AnimatedBuilder(
+              animation: _ctrl,
+              builder: (_, _) => Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2A6A52),
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF2A6A52)
+                          .withValues(alpha: 0.5 * _ctrl.value),
+                      blurRadius: 6 * _ctrl.value,
+                      spreadRadius: 2 * _ctrl.value,
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Container(
+              width: 6,
+              height: 6,
+              decoration: const BoxDecoration(
+                color: Color(0xFFB23A20),
+                shape: BoxShape.circle,
+              ),
+            ),
+          const SizedBox(width: 6),
+          Text(
+            widget.active ? 'Live' : 'Lỗi',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: widget.active
+                  ? const Color(0xFF2A6A52)
+                  : const Color(0xFFB23A20),
+              letterSpacing: 0.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Chip nhỏ "AI đang nói / đang nghĩ / đang lắng nghe".
+class _StatusChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  const _StatusChip({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 12),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: color,
+              letterSpacing: 0.3,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Waveform bars TO, dramatic — animate khi `active=true`, static khi false.
+///
+/// Tối ưu lag (xem memory feedback_flutter_perf):
+/// 1. Khi `active=false` → static, KHÔNG AnimatedBuilder rebuild
+/// 2. Khi `active=true` → RepaintBoundary cô lập paint khỏi parent tree
+/// 3. CustomPaint 1 paint op thay N widget Container
+///
+/// Style: bars dày 4px, height tới 60px, gradient end-to-end + glow khi
+/// active để nhìn rõ "chuyển động sóng" (như Siri/Alexa).
+class _VoiceWaveform extends StatelessWidget {
+  final bool active;
+  final Color color;
+  final AnimationController pulseCtrl;
+  final int barCount;
+  final double barHeight;
+  const _VoiceWaveform({
+    required this.active,
+    required this.color,
+    required this.pulseCtrl,
+    this.barCount = 20,
+    this.barHeight = 56,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (!active) {
+      return SizedBox(
+        height: barHeight,
+        child: RepaintBoundary(
+          child: CustomPaint(
+            painter: _WavePainter(
+              progress: 0,
+              color: color.withValues(alpha: 0.28),
+              barCount: barCount,
+              barHeight: barHeight,
+              animated: false,
+            ),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      );
+    }
+    return SizedBox(
+      height: barHeight,
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: pulseCtrl,
+          builder: (_, _) {
+            return CustomPaint(
+              painter: _WavePainter(
+                progress: pulseCtrl.value,
+                color: color,
+                barCount: barCount,
+                barHeight: barHeight,
+                animated: true,
+              ),
+              child: const SizedBox.expand(),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _WavePainter extends CustomPainter {
+  final double progress;
+  final Color color;
+  final int barCount;
+  final double barHeight;
+  final bool animated;
+  _WavePainter({
+    required this.progress,
+    required this.color,
+    required this.barCount,
+    required this.barHeight,
+    required this.animated,
+  });
+
+  static double _sin(double x) {
+    while (x > 3.14159) {
+      x -= 6.28318;
+    }
+    while (x < -3.14159) {
+      x += 6.28318;
+    }
+    return x - (x * x * x) / 6 + (x * x * x * x * x) / 120;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Bars dày + spacing rộng → trông rõ ràng như Siri waveform.
+    // KHÔNG dùng MaskFilter.blur (gây WebGL context loss trên CanvasKit).
+    // Thay bằng "halo" rect rộng hơn bên dưới với alpha thấp.
+    const barWidth = 4.0;
+    final spacing = barCount > 1
+        ? (size.width - barCount * barWidth) / (barCount - 1)
+        : 0.0;
+    final cx = size.height / 2;
+
+    final haloPaint = Paint()
+      ..color = color.withValues(alpha: animated ? 0.22 : 0.0)
+      ..style = PaintingStyle.fill;
+    final mainPaint = Paint()
+      ..color = color.withValues(alpha: animated ? 1.0 : 0.45)
+      ..style = PaintingStyle.fill;
+
+    for (int i = 0; i < barCount; i++) {
+      // 2 sin layered: tần số khác nhau tạo dao động phong phú như sóng âm
+      final phase1 = (progress * 6.28318) + (i * 0.62);
+      final phase2 = (progress * 12.566) + (i * 0.3);
+      final amp = animated
+          ? (0.5 + 0.5 * _sin(phase1) * 0.7 +
+                  0.5 * 0.5 * _sin(phase2) * 0.3)
+              .clamp(0.0, 1.0)
+          : 0.20;
+      final h = barHeight * (animated ? 0.18 + 0.82 * amp : 0.20);
+      final x = i * (barWidth + spacing);
+      final top = cx - h / 2;
+
+      // Halo: rect rộng hơn 4px, alpha thấp — giả "glow" mà không cần blur
+      if (animated) {
+        canvas.drawRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTWH(x - 2, top - 2, barWidth + 4, h + 4),
+            const Radius.circular(4),
+          ),
+          haloPaint,
+        );
+      }
+
+      // Main bar — solid color (không shader gradient để tránh GPU stress)
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, top, barWidth, h),
+          const Radius.circular(2.5),
+        ),
+        mainPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WavePainter old) =>
+      old.progress != progress ||
+      old.color != color ||
+      old.animated != animated ||
+      old.barCount != barCount;
+}
+
+/// Button bên trái/phải bottom bar — icon round + label nhỏ bên dưới.
+class _SideControl extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  const _SideControl({
+    required this.icon,
+    required this.label,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(28),
+            child: Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+                border: Border.all(color: const Color(0xFFE6E4EC)),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.navy.withValues(alpha: 0.05),
+                    offset: const Offset(0, 4),
+                    blurRadius: 10,
+                  ),
+                ],
+              ),
+              child: Icon(
+                icon,
+                color: enabled
+                    ? AppColors.navy
+                    : const Color(0xFFB6B2C2),
+                size: 22,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: enabled
+                ? const Color(0xFF5C5870)
+                : const Color(0xFFB6B2C2),
+          ),
+        ),
+      ],
+    );
+  }
 }

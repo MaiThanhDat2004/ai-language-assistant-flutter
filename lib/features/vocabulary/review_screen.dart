@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -8,12 +10,11 @@ import '../../shared/providers/app_providers.dart';
 
 /// Flashcard review screen — Spaced Repetition flow.
 ///
-/// UX:
-/// 1. Load danh sách due → hiện thẻ đầu (mặt trước: word)
-/// 2. User tap "Hiện đáp án" → flip card (mặt sau: definition + example)
-/// 3. User chấm điểm 1 trong 4: Quên / Khó / Được / Dễ
-/// 4. POST /vocabulary/{id}/review → server áp dụng SM-2
-/// 5. Tự động chuyển sang thẻ tiếp theo, hoặc kết thúc nếu hết
+/// UX (theo HTML design "_n t_p _ Card flip.html"):
+/// 1. Load due → card đầu (mặt trước: word)
+/// 2. Tap card → flip 3D sang mặt sau (definition + example)
+/// 3. Pick 1 trong 4 rating: Quên / Khó / Ổn / Dễ với hint time
+/// 4. POST /vocabulary/{id}/review → server áp SM-2 → next card
 class ReviewScreen extends ConsumerStatefulWidget {
   const ReviewScreen({super.key});
 
@@ -21,32 +22,35 @@ class ReviewScreen extends ConsumerStatefulWidget {
   ConsumerState<ReviewScreen> createState() => _ReviewScreenState();
 }
 
-class _ReviewScreenState extends ConsumerState<ReviewScreen> {
+class _ReviewScreenState extends ConsumerState<ReviewScreen>
+    with SingleTickerProviderStateMixin {
   List<Vocabulary> _queue = [];
   int _index = 0;
   bool _showAnswer = false;
   bool _loading = true;
   bool _submitting = false;
   String? _error;
-  // Stats
   int _reviewedCount = 0;
   final Map<ReviewRating, int> _ratingCounts = {};
-  // Self-test typing
-  final _guessCtrl = TextEditingController();
-  /// Kết quả check: null=chưa check, true=đúng, false=sai
-  bool? _guessCorrect;
-  /// Đang ở chế độ browse (không còn từ due, đang ôn ngẫu nhiên)
   bool _browseMode = false;
+  int _streakDays = 0;
+
+  late final AnimationController _flipCtrl;
 
   @override
   void initState() {
     super.initState();
+    _flipCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 420),
+    );
     _loadQueue();
+    _loadStreak();
   }
 
   @override
   void dispose() {
-    _guessCtrl.dispose();
+    _flipCtrl.dispose();
     super.dispose();
   }
 
@@ -57,7 +61,6 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     });
     try {
       final api = ref.read(vocabularyApiProvider);
-      // Ưu tiên từ due. Nếu không có → fallback random (browse mode)
       var queue = await api.listDue(limit: 50);
       _browseMode = queue.isEmpty;
       if (queue.isEmpty) {
@@ -68,16 +71,33 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
         _queue = queue;
         _index = 0;
         _showAnswer = false;
-        _guessCtrl.clear();
-        _guessCorrect = null;
         _loading = false;
       });
+      _flipCtrl.reset();
     } on AppError catch (e) {
       if (!mounted) return;
       setState(() {
         _error = e.message;
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _loadStreak() async {
+    try {
+      final s = await ref.read(vocabularyApiProvider).getStats();
+      if (!mounted) return;
+      setState(() => _streakDays = s.streakDays);
+    } catch (_) {/* best-effort */}
+  }
+
+  void _toggleAnswer() {
+    if (_showAnswer) {
+      _flipCtrl.reverse();
+      setState(() => _showAnswer = false);
+    } else {
+      _flipCtrl.forward();
+      setState(() => _showAnswer = true);
     }
   }
 
@@ -89,14 +109,12 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       await ref.read(vocabularyApiProvider).review(current.id, rating);
       if (!mounted) return;
       _ratingCounts[rating] = (_ratingCounts[rating] ?? 0) + 1;
+      _flipCtrl.reset();
       setState(() {
         _reviewedCount++;
         _index++;
         _showAnswer = false;
         _submitting = false;
-        // Reset self-test state cho thẻ tiếp theo
-        _guessCtrl.clear();
-        _guessCorrect = null;
       });
     } on AppError catch (e) {
       if (!mounted) return;
@@ -107,54 +125,16 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     }
   }
 
-  /// Check guess của user với definition của từ.
-  /// Match logic: lowercase + remove diacritics + check chứa keyword.
-  /// Đơn giản đủ dùng cho V1; V2 có thể dùng fuzzy matching (Levenshtein).
-  void _checkGuess() {
-    if (_index >= _queue.length) return;
-    final current = _queue[_index];
-    final guess = _guessCtrl.text.trim();
-    if (guess.isEmpty) return;
-
-    final def = current.definition ?? '';
-    final guessNorm = _normalize(guess);
-    final defNorm = _normalize(def);
-
-    // Match 2 chiều: guess chứa trong def HOẶC def chứa trong guess
-    final correct = defNorm.contains(guessNorm) || guessNorm.contains(defNorm);
-    setState(() {
-      _guessCorrect = correct;
-      _showAnswer = true; // luôn hiện đáp án sau khi check
-    });
-  }
-
-  static String _normalize(String s) {
-    var t = s.toLowerCase().trim();
-    // Bỏ dấu tiếng Việt cơ bản — giúp match "ngây thơ" với "ngay tho"
-    const from = 'àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ';
-    const to = 'aaaaaaaaaaaaaaaaaeeeeeeeeeeeiiiiiooooooooooooooooouuuuuuuuuuuyyyyyd';
-    var buf = StringBuffer();
-    for (final c in t.split('')) {
-      final i = from.indexOf(c);
-      buf.write(i >= 0 ? to[i] : c);
-    }
-    // Bỏ punctuation
-    return buf.toString().replaceAll(RegExp(r'[^\w\s]'), '').trim();
-  }
-
   @override
   Widget build(BuildContext context) {
-    ref.watch(themeModeProvider);  // subscribe để rebuild khi đổi theme
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(gradient: AppColors.backgroundGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildHeader(context),
-              Expanded(child: _buildBody()),
-            ],
-          ),
+      backgroundColor: const Color(0xFFF7F5F0),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildHeader(context),
+            Expanded(child: _buildBody()),
+          ],
         ),
       ),
     );
@@ -162,63 +142,65 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
 
   Widget _buildHeader(BuildContext context) {
     final progress = _queue.isEmpty ? 0.0 : _index / _queue.length;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(8, 8, 16, 12),
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppColors.divider)),
-      ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 8, 16, 8),
       child: Column(
         children: [
           Row(
             children: [
               IconButton(
                 onPressed: () => context.pop(),
-                icon: Icon(Icons.arrow_back,
-                    color: AppColors.textPrimary),
+                icon: const Icon(Icons.close_rounded,
+                    color: AppColors.navy, size: 24),
               ),
-              Text(_browseMode ? 'Ôn ngẫu nhiên' : 'Ôn tập',
-                  style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary)),
-              if (_browseMode) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: AppColors.primaryLight.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: const Text('Browse',
-                      style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.primaryLight)),
+              Expanded(
+                child: Center(
+                  child: _queue.isEmpty
+                      ? Text(
+                          _browseMode ? 'Ôn ngẫu nhiên' : 'Ôn tập',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF5C5870),
+                          ),
+                        )
+                      : RichText(
+                          text: TextSpan(
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.navy,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
+                            children: [
+                              TextSpan(text: '${_index.clamp(0, _queue.length)}'),
+                              TextSpan(
+                                text: ' / ${_queue.length}',
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF8C879E),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                 ),
-              ],
-              const Spacer(),
-              if (_queue.isNotEmpty)
-                Text(
-                  '${_index.clamp(0, _queue.length)}/${_queue.length}',
-                  style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontWeight: FontWeight.w600),
-                ),
+              ),
+              if (_streakDays > 0) _StreakChip(days: _streakDays)
+              else const SizedBox(width: 40),
             ],
           ),
-          const SizedBox(height: 8),
-          if (_queue.isNotEmpty)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(3),
-              child: LinearProgressIndicator(
-                value: progress,
-                minHeight: 6,
-                backgroundColor: AppColors.surface,
-                valueColor: const AlwaysStoppedAnimation(
-                    AppColors.primaryLight),
-              ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 6,
+              backgroundColor: const Color(0xFFFFE0D0),
+              valueColor: const AlwaysStoppedAnimation(AppColors.primary),
             ),
+          ),
         ],
       ),
     );
@@ -227,24 +209,21 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   Widget _buildBody() {
     if (_loading) {
       return const Center(
-          child: CircularProgressIndicator(color: AppColors.primaryLight));
+          child: CircularProgressIndicator(color: AppColors.primary));
     }
     if (_error != null) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Text(_error!,
+              textAlign: TextAlign.center,
               style: const TextStyle(color: AppColors.error)),
         ),
       );
     }
-    if (_queue.isEmpty) {
-      return _emptyState();
-    }
-    if (_index >= _queue.length) {
-      return _completedState();
-    }
-    return _buildFlashcard(_queue[_index]);
+    if (_queue.isEmpty) return _emptyState();
+    if (_index >= _queue.length) return _completedState();
+    return _buildCardView(_queue[_index]);
   }
 
   Widget _emptyState() {
@@ -258,24 +237,24 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
               width: 80,
               height: 80,
               decoration: BoxDecoration(
-                gradient: AppColors.cardGradient4,
-                borderRadius: BorderRadius.circular(20),
+                color: const Color(0xFFE6F4ED),
+                borderRadius: BorderRadius.circular(22),
               ),
-              child: const Icon(Icons.celebration,
-                  color: Colors.white, size: 40),
+              alignment: Alignment.center,
+              child: const Text('🎉', style: TextStyle(fontSize: 40)),
             ),
-            const SizedBox(height: 16),
-            Text('Không có từ nào cần ôn',
+            const SizedBox(height: 14),
+            const Text('Không có từ nào cần ôn',
                 style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textPrimary)),
-            const SizedBox(height: 8),
-            Text(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.navy,
+                )),
+            const SizedBox(height: 6),
+            const Text(
               'Hoặc bạn chưa lưu từ nào, hoặc đã ôn xong hôm nay.\nQuay lại sau nhé!',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                  color: AppColors.textSecondary, fontSize: 13),
+              style: TextStyle(color: Color(0xFF5C5870), fontSize: 13),
             ),
           ],
         ),
@@ -298,23 +277,24 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
               width: 96,
               height: 96,
               decoration: BoxDecoration(
-                gradient: AppColors.cardGradient4,
+                color: const Color(0xFFE6F4ED),
                 borderRadius: BorderRadius.circular(24),
               ),
-              child: const Icon(Icons.check_circle,
-                  color: Colors.white, size: 48),
+              alignment: Alignment.center,
+              child: const Text('✨', style: TextStyle(fontSize: 48)),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
             Text('Hoàn thành $_reviewedCount thẻ!',
-                style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textPrimary)),
-            const SizedBox(height: 24),
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.navy,
+                )),
+            const SizedBox(height: 20),
             _statRow('Quên', again, AppColors.error),
-            _statRow('Khó', hard, AppColors.warning),
-            _statRow('Được', good, AppColors.primaryLight),
-            _statRow('Dễ', easy, AppColors.success),
+            _statRow('Khó', hard, const Color(0xFFFFB04A)),
+            _statRow('Ổn', good, AppColors.primary),
+            _statRow('Dễ', easy, const Color(0xFF2A6A52)),
             const SizedBox(height: 24),
             Row(
               children: [
@@ -323,9 +303,9 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                     onPressed: () => context.pop(),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      side: BorderSide(color: AppColors.border),
+                      side: const BorderSide(color: Color(0xFFE6E4EC)),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                          borderRadius: BorderRadius.circular(14)),
                     ),
                     child: const Text('Xong'),
                   ),
@@ -336,12 +316,13 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                     onPressed: _loadQueue,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
+                      elevation: 0,
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                          borderRadius: BorderRadius.circular(14)),
                     ),
-                    child: const Text('Ôn tiếp',
-                        style: TextStyle(color: Colors.white)),
+                    child: const Text('Ôn tiếp'),
                   ),
                 ),
               ],
@@ -358,51 +339,83 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       child: Row(
         children: [
           Container(
-            width: 12,
-            height: 12,
+            width: 10,
+            height: 10,
             decoration: BoxDecoration(
                 color: color, borderRadius: BorderRadius.circular(3)),
           ),
           const SizedBox(width: 10),
           Text(label,
-              style:
-                  TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+              style: const TextStyle(
+                  color: Color(0xFF5C5870), fontSize: 14)),
           const Spacer(),
           Text('$count',
               style: TextStyle(
-                  color: color, fontWeight: FontWeight.w700, fontSize: 16)),
+                  color: color,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                  fontFeatures: const [FontFeature.tabularFigures()])),
         ],
       ),
     );
   }
 
-  Widget _buildFlashcard(Vocabulary v) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
+  // ============================================================
+  // Card view — front + back with 3D flip
+  // ============================================================
+  Widget _buildCardView(Vocabulary v) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
       child: Column(
         children: [
-          const SizedBox(height: 20),
-          _buildCardBody(v),
-          const SizedBox(height: 24),
-          _buildActionRow(v),
+          Expanded(
+            child: Center(
+              child: GestureDetector(
+                onTap: _toggleAnswer,
+                child: AnimatedBuilder(
+                  animation: _flipCtrl,
+                  builder: (_, _) {
+                    final angle = _flipCtrl.value * math.pi;
+                    final isFront = _flipCtrl.value < 0.5;
+                    return Transform(
+                      alignment: Alignment.center,
+                      transform: Matrix4.identity()
+                        ..setEntry(3, 2, 0.0012)
+                        ..rotateY(angle),
+                      child: isFront
+                          ? _cardFront(v)
+                          : Transform(
+                              alignment: Alignment.center,
+                              transform: Matrix4.identity()..rotateY(math.pi),
+                              child: _cardBack(v),
+                            ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildRatingSection(v),
         ],
       ),
     );
   }
 
-  Widget _buildCardBody(Vocabulary v) {
+  Widget _cardFront(Vocabulary v) {
     return Container(
       width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 280),
-      padding: const EdgeInsets.all(24),
+      constraints: const BoxConstraints(minHeight: 320),
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
-        gradient: AppColors.cardGradient1,
-        borderRadius: BorderRadius.circular(20),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFFE6E4EC)),
         boxShadow: [
           BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.25),
-            blurRadius: 20,
+            color: AppColors.navy.withValues(alpha: 0.06),
             offset: const Offset(0, 8),
+            blurRadius: 20,
           ),
         ],
       ),
@@ -412,278 +425,418 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
           Row(
             children: [
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(8),
+                  color: const Color(0xFFFFF1EC),
+                  borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  v.language.toUpperCase(),
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700),
+                  '${_levelLabel(v)} · ${v.language.toUpperCase()}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primaryDark,
+                    letterSpacing: 0.4,
+                  ),
                 ),
               ),
               const Spacer(),
-              if (v.repetitions > 0)
-                Text(
-                  '🔁 ${v.repetitions} lần • EF ${v.easeFactor.toStringAsFixed(2)}',
-                  style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.7),
-                      fontSize: 11),
-                ),
+              _TtsButton(text: v.word, language: v.language),
             ],
           ),
-          const SizedBox(height: 28),
+          const Spacer(),
           Center(
             child: Text(
               v.word,
               textAlign: TextAlign.center,
               style: const TextStyle(
-                  fontSize: 36,
-                  fontWeight: FontWeight.w800,
-                  color: Colors.white),
+                fontSize: 40,
+                fontWeight: FontWeight.w800,
+                color: AppColors.navy,
+                letterSpacing: -1.0,
+              ),
             ),
           ),
-          const SizedBox(height: 24),
-          if (_showAnswer) ...[
-            const Divider(color: Colors.white24, height: 24),
-            if (v.definition != null) ...[
-              Text(
-                'Định nghĩa',
-                style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.7),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.5),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                v.definition!,
+          if (v.repetitions > 0) ...[
+            const SizedBox(height: 6),
+            Center(
+              child: Text(
+                '🔁 ${v.repetitions} lần · EF ${v.easeFactor.toStringAsFixed(2)}',
                 style: const TextStyle(
-                    color: Colors.white, fontSize: 16, height: 1.4),
-              ),
-              const SizedBox(height: 16),
-            ],
-            if (v.example != null) ...[
-              Text(
-                'Ví dụ',
-                style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.7),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.5),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                v.example!,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  height: 1.4,
-                  fontStyle: FontStyle.italic,
+                  fontSize: 11,
+                  color: Color(0xFF8C879E),
                 ),
               ),
-            ],
-          ] else
-            const Center(
-              child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Text('Hãy đoán nghĩa của từ này',
-                    style: TextStyle(color: Colors.white70, fontSize: 13)),
-              ),
             ),
+          ],
+          const Spacer(),
+          Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Bấm để xem nghĩa',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFF8C879E),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.keyboard_arrow_down_rounded,
+                    color: Color(0xFF8C879E), size: 18),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildActionRow(Vocabulary v) {
-    if (!_showAnswer) {
-      final canCheck = _guessCtrl.text.trim().isNotEmpty;
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: EdgeInsets.only(bottom: 8, left: 4),
-            child: Text(
-              'Tự kiểm tra — gõ nghĩa bạn đoán rồi bấm "Kiểm tra"',
-              style: TextStyle(
-                  color: AppColors.textSecondary, fontSize: 12),
-            ),
+  Widget _cardBack(Vocabulary v) {
+    return Container(
+      width: double.infinity,
+      constraints: const BoxConstraints(minHeight: 320),
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFFE6E4EC)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.navy.withValues(alpha: 0.06),
+            offset: const Offset(0, 8),
+            blurRadius: 20,
           ),
-          TextField(
-            controller: _guessCtrl,
-            textInputAction: TextInputAction.done,
-            onChanged: (_) => setState(() {}),  // để nút "Kiểm tra" enable/disable đúng
-            onSubmitted: (_) => _checkGuess(),
-            style: TextStyle(color: AppColors.textPrimary),
-            decoration: InputDecoration(
-              hintText: 'Định nghĩa bạn đoán...',
-              hintStyle: TextStyle(color: AppColors.textTertiary),
-              filled: true,
-              fillColor: AppColors.surface,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: AppColors.border),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: AppColors.border),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(
-                    color: AppColors.primaryLight, width: 1.5),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          // 2 nút song song — "Kiểm tra" primary, "Bỏ qua" outlined
-          Row(
-            children: [
-              Expanded(
-                child: SizedBox(
-                  height: 50,
-                  child: OutlinedButton(
-                    onPressed: () => setState(() => _showAnswer = true),
-                    style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: AppColors.border),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: Text(
-                      'Bỏ qua',
-                      style: TextStyle(
-                          color: AppColors.textPrimary,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600),
+        ],
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    v.word,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.navy,
+                      letterSpacing: -0.5,
                     ),
                   ),
                 ),
+                _TtsButton(text: v.word, language: v.language, compact: true),
+              ],
+            ),
+            const SizedBox(height: 18),
+            if (v.definition != null) ...[
+              const _CardSectionLabel('NGHĨA'),
+              const SizedBox(height: 6),
+              Text(
+                v.definition!,
+                style: const TextStyle(
+                  fontSize: 16,
+                  height: 1.5,
+                  color: AppColors.navy,
+                ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                flex: 2,
-                child: SizedBox(
-                  height: 50,
-                  child: ElevatedButton.icon(
-                    onPressed: canCheck ? _checkGuess : null,
-                    icon: const Icon(Icons.check_circle, size: 18),
-                    label: const Text(
-                      'Kiểm tra',
-                      style: TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.w600),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: Colors.white,
-                      disabledBackgroundColor:
-                          AppColors.surfaceLight,
-                      disabledForegroundColor: AppColors.textTertiary,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
+              const SizedBox(height: 18),
+            ],
+            if (v.example != null) ...[
+              const _CardSectionLabel('VÍ DỤ'),
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF5EF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFFFE0D0)),
+                ),
+                child: Text(
+                  v.example!,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    height: 1.5,
+                    color: AppColors.navy,
+                    fontStyle: FontStyle.italic,
                   ),
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRatingSection(Vocabulary v) {
+    if (!_showAnswer) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text(
+          'Đoán nghĩa trong đầu rồi lật thẻ',
+          style: TextStyle(
+            color: const Color(0xFF8C879E),
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
           ),
-        ],
+        ),
       );
     }
-
-    // Sau khi reveal — nếu user đã guess, hiện feedback đúng/sai trước rating row
-    final feedback = _guessCorrect == null
-        ? const SizedBox.shrink()
-        : Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: (_guessCorrect!
-                      ? AppColors.success
-                      : AppColors.error)
-                  .withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: (_guessCorrect!
-                        ? AppColors.success
-                        : AppColors.error)
-                    .withValues(alpha: 0.5),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  _guessCorrect! ? Icons.check_circle : Icons.cancel,
-                  color: _guessCorrect!
-                      ? AppColors.success
-                      : AppColors.error,
-                  size: 18,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _guessCorrect!
-                        ? 'Đoán đúng! Chọn "Được" hoặc "Dễ" để ghi nhận.'
-                        : 'Chưa khớp. Xem định nghĩa trên và chọn "Quên" hoặc "Khó".',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: _guessCorrect!
-                          ? AppColors.success
-                          : AppColors.error,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          );
-
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        feedback,
-        // 4 nút rating — màu tăng dần theo độ "thuộc"
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Text(
+            'Bạn nhớ từ này tốt như nào?',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF5C5870),
+            ),
+          ),
+        ),
         Row(
           children: [
             Expanded(
-                child: _ratingButton(ReviewRating.again, AppColors.error)),
+              child: _RatingButton(
+                label: 'Quên',
+                timeHint: _hintFor(v, ReviewRating.again),
+                color: AppColors.error,
+                onTap: _submitting
+                    ? null
+                    : () => _submitRating(ReviewRating.again),
+              ),
+            ),
             const SizedBox(width: 8),
             Expanded(
-                child: _ratingButton(ReviewRating.hard, AppColors.warning)),
+              child: _RatingButton(
+                label: 'Khó',
+                timeHint: _hintFor(v, ReviewRating.hard),
+                color: const Color(0xFFFFB04A),
+                onTap: _submitting
+                    ? null
+                    : () => _submitRating(ReviewRating.hard),
+              ),
+            ),
             const SizedBox(width: 8),
             Expanded(
-                child:
-                    _ratingButton(ReviewRating.good, AppColors.primaryLight)),
+              child: _RatingButton(
+                label: 'Ổn',
+                timeHint: _hintFor(v, ReviewRating.good),
+                color: AppColors.primary,
+                onTap: _submitting
+                    ? null
+                    : () => _submitRating(ReviewRating.good),
+              ),
+            ),
             const SizedBox(width: 8),
             Expanded(
-                child: _ratingButton(ReviewRating.easy, AppColors.success)),
+              child: _RatingButton(
+                label: 'Dễ',
+                timeHint: _hintFor(v, ReviewRating.easy),
+                color: const Color(0xFF2A6A52),
+                onTap: _submitting
+                    ? null
+                    : () => _submitRating(ReviewRating.easy),
+              ),
+            ),
           ],
         ),
       ],
     );
   }
 
-  Widget _ratingButton(ReviewRating rating, Color color) {
+  /// Hint khoảng thời gian next review hiển thị dưới mỗi rating button.
+  /// Estimate dựa trên SM-2 logic (backend tính chính xác — đây chỉ là hint).
+  String _hintFor(Vocabulary v, ReviewRating r) {
+    if (r == ReviewRating.again) return '<1m';
+    final ef = v.easeFactor;
+    final reps = v.repetitions;
+    // again resets; hard reduces interval; good keeps; easy multiplies
+    if (reps == 0) {
+      switch (r) {
+        case ReviewRating.hard:
+          return '6m';
+        case ReviewRating.good:
+          return '10m';
+        case ReviewRating.easy:
+          return '4 ngày';
+        default:
+          return '<1m';
+      }
+    }
+    final interval = v.intervalDays;
+    final factor = switch (r) {
+      ReviewRating.hard => 1.2,
+      ReviewRating.good => ef,
+      ReviewRating.easy => ef * 1.3,
+      _ => 0.0,
+    };
+    final days = (interval * factor).round().clamp(1, 9999);
+    if (days < 1) return '<1 ngày';
+    if (days == 1) return '1 ngày';
+    if (days < 7) return '$days ngày';
+    if (days < 30) {
+      final w = (days / 7).round();
+      return '$w tuần';
+    }
+    final m = (days / 30).round();
+    return '$m tháng';
+  }
+}
+
+// ============================================================
+// UI helpers
+// ============================================================
+
+class _StreakChip extends StatelessWidget {
+  final int days;
+  const _StreakChip({required this.days});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF4E0),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFFFD89C)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('🔥', style: TextStyle(fontSize: 13)),
+          const SizedBox(width: 5),
+          Text(
+            '$days',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFFB23A20),
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CardSectionLabel extends StatelessWidget {
+  final String text;
+  const _CardSectionLabel(this.text);
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: TextStyle(
+        fontSize: 10,
+        fontWeight: FontWeight.w800,
+        color: AppColors.primaryDark,
+        letterSpacing: 1.4,
+      ),
+    );
+  }
+}
+
+class _TtsButton extends StatelessWidget {
+  final String text;
+  final String language;
+  final bool compact;
+  const _TtsButton({
+    required this.text,
+    required this.language,
+    this.compact = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size = compact ? 32.0 : 36.0;
     return Material(
-      color: _submitting ? color.withValues(alpha: 0.4) : color,
-      borderRadius: BorderRadius.circular(12),
+      color: AppColors.primary,
+      shape: const CircleBorder(),
       child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: _submitting ? null : () => _submitRating(rating),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 14),
+        customBorder: const CircleBorder(),
+        onTap: () {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Phát TTS — đang phát triển'),
+              duration: Duration(seconds: 1),
+            ),
+          );
+        },
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: const Icon(Icons.play_arrow_rounded,
+              color: Colors.white, size: 20),
+        ),
+      ),
+    );
+  }
+}
+
+class _RatingButton extends StatelessWidget {
+  final String label;
+  final String timeHint;
+  final Color color;
+  final VoidCallback? onTap;
+  const _RatingButton({
+    required this.label,
+    required this.timeHint,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onTap == null;
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: disabled
+                  ? const Color(0xFFE6E4EC)
+                  : color.withValues(alpha: 0.5),
+              width: 1.5,
+            ),
+          ),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(_ratingIcon(rating), color: Colors.white, size: 22),
-              const SizedBox(height: 4),
               Text(
-                rating.label,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600),
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: disabled ? const Color(0xFFB6B2C2) : color,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                timeHint,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: disabled
+                      ? const Color(0xFFB6B2C2)
+                      : color.withValues(alpha: 0.7),
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
               ),
             ],
           ),
@@ -691,17 +844,14 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       ),
     );
   }
+}
 
-  IconData _ratingIcon(ReviewRating r) {
-    switch (r) {
-      case ReviewRating.again:
-        return Icons.close;
-      case ReviewRating.hard:
-        return Icons.sentiment_dissatisfied;
-      case ReviewRating.good:
-        return Icons.check;
-      case ReviewRating.easy:
-        return Icons.bolt;
-    }
-  }
+// ============================================================
+// Helpers — level estimate from EF/repetitions
+// ============================================================
+String _levelLabel(Vocabulary v) {
+  if (v.repetitions >= 3 && v.intervalDays >= 21) return 'C1';
+  if (v.repetitions >= 2) return 'B2';
+  if (v.repetitions >= 1) return 'B1';
+  return 'A2';
 }

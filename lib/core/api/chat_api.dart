@@ -172,4 +172,75 @@ class ChatApi {
       throw AppError.fromDio(e);
     }
   }
+
+  /// Layer 4 — Grammar correction. Lazy fetch sau khi AI stream xong với
+  /// user_message_id. Backend cache 2 tầng (FIFO mem + DB column) nên lần
+  /// sau load history sẽ trả ngay không gọi LLM.
+  Future<MessageCorrection> getCorrection(String userMessageId) async {
+    try {
+      final res =
+          await _client.dio.post('/chat/correction/$userMessageId');
+      return MessageCorrection.fromJson(res.data as Map<String, dynamic>);
+    } on DioException catch (e) {
+      throw AppError.fromDio(e);
+    }
+  }
+}
+
+// ============================================================
+// Layer 4 — Grammar Correction model
+// ============================================================
+
+class CorrectionSegment {
+  /// 'keep' | 'remove' | 'add'
+  final String type;
+  final String text;
+  const CorrectionSegment({required this.type, required this.text});
+
+  factory CorrectionSegment.fromJson(Map<String, dynamic> json) =>
+      CorrectionSegment(
+        type: json['type'] as String? ?? 'keep',
+        text: json['text'] as String? ?? '',
+      );
+
+  bool get isKeep => type == 'keep';
+  bool get isRemove => type == 'remove';
+  bool get isAdd => type == 'add';
+}
+
+class MessageCorrection {
+  final bool hasError;
+  final String wrong;
+  final String corrected;
+  final List<CorrectionSegment> diff;
+  final String explanation;
+  // 3 câu USER có thể nói tiếp dựa vào AI response. Câu đầu thường là
+  // phiên bản đã sửa nếu hasError=true (để user practice).
+  final List<String> nextSuggestions;
+
+  const MessageCorrection({
+    required this.hasError,
+    required this.wrong,
+    required this.corrected,
+    required this.diff,
+    required this.explanation,
+    required this.nextSuggestions,
+  });
+
+  factory MessageCorrection.fromJson(Map<String, dynamic> json) {
+    final rawDiff = json['diff'] as List? ?? [];
+    final rawSuggestions = json['next_suggestions'] as List? ?? [];
+    return MessageCorrection(
+      hasError: json['has_error'] as bool? ?? false,
+      wrong: json['wrong'] as String? ?? '',
+      corrected: json['corrected'] as String? ?? '',
+      diff: rawDiff
+          .map((e) =>
+              CorrectionSegment.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      explanation: json['explanation'] as String? ?? '',
+      nextSuggestions:
+          rawSuggestions.map((e) => e.toString()).toList(),
+    );
+  }
 }

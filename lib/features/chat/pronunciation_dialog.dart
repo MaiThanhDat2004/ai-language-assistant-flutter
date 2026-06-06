@@ -382,16 +382,15 @@ class _PronunciationDialogState extends ConsumerState<PronunciationDialog> {
   Widget _buildResult(PronunciationResult r) {
     final pct = (r.score * 100).round();
     final color = switch (r.rating) {
-      'good' => AppColors.success,
-      'fair' => AppColors.warning,
+      'good' => const Color(0xFF2A6A52),
+      'fair' => AppColors.primary,
       _ => AppColors.error,
     };
     final label = switch (r.rating) {
-      'good' => 'Tốt',
-      'fair' => 'Khá',
-      _ => 'Cần luyện thêm',
+      'good' => 'Tuyệt vời!',
+      'fair' => 'Khá ổn! Cần luyện thêm',
+      _ => 'Cần luyện nhiều hơn',
     };
-    // Có cần coaching không? Khi có wrong/missing hoặc từ low-conf
     final hasIssues = r.words.any((w) =>
         w.status == 'wrong' ||
         w.status == 'missing' ||
@@ -400,57 +399,69 @@ class _PronunciationDialogState extends ConsumerState<PronunciationDialog> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: color.withValues(alpha: 0.5)),
-                ),
-                child: Text(
-                  '$pct% — $label',
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                  ),
+          // ============ BIG CIRCULAR SCORE 160×160 ============
+          Center(
+            child: _ScoreDonut(
+              percentage: pct,
+              color: color,
+            ),
+          ),
+          const SizedBox(height: 14),
+          // ============ Status chip ============
+          Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.2,
                 ),
               ),
-            ],
+            ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 20),
+          // ============ TỪNG TỪ section ============
           Text(
-            'Phân tích từng chữ:',
-            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            'TỪNG TỪ',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              color: AppColors.primaryDark,
+              letterSpacing: 1.2,
+            ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           Wrap(
-            spacing: 6,
-            runSpacing: 6,
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              for (final w in r.words) _wordChip(w),
+              for (final w in r.words) _WordScoreTile(word: w),
             ],
           ),
           if (r.transcription.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text(
               'Bạn đọc: ${r.transcription}',
-              style: TextStyle(
-                color: AppColors.textTertiary,
+              style: const TextStyle(
+                color: Color(0xFF8C879E),
                 fontSize: 12,
                 fontStyle: FontStyle.italic,
               ),
             ),
           ],
-          // Coaching section — CTA hoặc cards tuỳ state
           if (hasIssues) ...[
-            const SizedBox(height: 14),
+            const SizedBox(height: 18),
             _buildCoachingSection(r),
           ],
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           Row(
             children: [
               Expanded(
@@ -589,49 +600,6 @@ class _PronunciationDialogState extends ConsumerState<PronunciationDialog> {
             const Icon(Icons.arrow_forward_rounded,
                 color: Colors.white, size: 16),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _wordChip(PronunciationWord w) {
-    // Low-confidence override: match từ về text nhưng Whisper KHÔNG chắc cách
-    // phát âm — chuyển sang warning vàng + dấu ~ để báo "đọc chưa rõ".
-    final isLow = w.isLowConfidence;
-    final (text, color) = switch (w.status) {
-      'match' when isLow => (
-        '~${w.ref ?? w.got ?? ''}',
-        AppColors.warning,
-      ),
-      'match' => (w.ref ?? w.got ?? '', AppColors.success),
-      'wrong' => ('${w.ref} → ${w.got}', AppColors.error),
-      'missing' => ('${w.ref} ✕', AppColors.error),
-      'extra' when isLow => ('~+${w.got}', AppColors.warning),
-      'extra' => ('+${w.got}', AppColors.warning),
-      _ => (w.ref ?? '', AppColors.textSecondary),
-    };
-    final confLabel =
-        w.confidence != null ? ' ${(w.confidence! * 100).round()}%' : '';
-    return Tooltip(
-      message: isLow
-          ? 'Whisper nghe chưa rõ từ này (${(w.confidence! * 100).round()}%)'
-          : (w.confidence != null
-              ? 'Confidence: ${(w.confidence! * 100).round()}%'
-              : ''),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: color.withValues(alpha: 0.4), width: 0.5),
-        ),
-        child: Text(
-          '$text$confLabel',
-          style: TextStyle(
-            color: color,
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-          ),
         ),
       ),
     );
@@ -969,6 +937,176 @@ class _CoachingRow extends StatelessWidget {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Score donut + word tile — new visual style cho result view
+// ============================================================
+
+/// Vòng tròn lớn 160×160 với % điểm ở giữa, animate fill từ 0 → score.
+class _ScoreDonut extends StatefulWidget {
+  final int percentage;
+  final Color color;
+  const _ScoreDonut({required this.percentage, required this.color});
+
+  @override
+  State<_ScoreDonut> createState() => _ScoreDonutState();
+}
+
+class _ScoreDonutState extends State<_ScoreDonut>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _anim;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    );
+    _anim = CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic);
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 160,
+      height: 160,
+      child: AnimatedBuilder(
+        animation: _anim,
+        builder: (_, _) {
+          final v = (_anim.value * widget.percentage).round();
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: 160,
+                height: 160,
+                child: CircularProgressIndicator(
+                  value: _anim.value * (widget.percentage / 100),
+                  strokeWidth: 12,
+                  strokeCap: StrokeCap.round,
+                  backgroundColor: widget.color.withValues(alpha: 0.12),
+                  valueColor: AlwaysStoppedAnimation(widget.color),
+                ),
+              ),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '$v',
+                    style: TextStyle(
+                      fontSize: 44,
+                      fontWeight: FontWeight.w800,
+                      color: widget.color,
+                      letterSpacing: -1.5,
+                      height: 1.0,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '/ 100',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF8C879E),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// 1 tile cho mỗi từ — word + score nhỏ 0-100, màu theo status.
+class _WordScoreTile extends StatelessWidget {
+  final PronunciationWord word;
+  const _WordScoreTile({required this.word});
+
+  @override
+  Widget build(BuildContext context) {
+    final isLow = word.isLowConfidence;
+    final pct = word.confidence != null
+        ? (word.confidence! * 100).round()
+        : null;
+    final (Color tileColor, Color textColor, String display) = switch (word.status) {
+      'match' when isLow => (
+        const Color(0xFFFFF4E0),
+        const Color(0xFFB23A20),
+        '~${word.ref ?? word.got ?? ''}'
+      ),
+      'match' => (
+        const Color(0xFFE6F4ED),
+        const Color(0xFF2A6A52),
+        word.ref ?? word.got ?? ''
+      ),
+      'wrong' => (
+        const Color(0xFFFFEBE6),
+        const Color(0xFFB23A20),
+        word.ref ?? ''
+      ),
+      'missing' => (
+        const Color(0xFFFFEBE6),
+        const Color(0xFFB23A20),
+        '${word.ref ?? ''} ✕'
+      ),
+      'extra' => (
+        const Color(0xFFFFF4E0),
+        const Color(0xFFB23A20),
+        '+${word.got ?? ''}'
+      ),
+      _ => (
+        const Color(0xFFF0EFF4),
+        const Color(0xFF5C5870),
+        word.ref ?? ''
+      ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: tileColor,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            display,
+            style: TextStyle(
+              color: textColor,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (pct != null) ...[
+            const SizedBox(width: 6),
+            Text(
+              '$pct',
+              style: TextStyle(
+                color: textColor,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
         ],
       ),
     );

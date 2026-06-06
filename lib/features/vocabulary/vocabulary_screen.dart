@@ -18,7 +18,7 @@ final _vocabStatsProvider =
   return ref.read(vocabularyApiProvider).getStats();
 });
 
-enum _VocabTab { learning, mastered }
+enum _Filter { all, due, mastered, fresh, hard }
 
 class VocabularyScreen extends ConsumerStatefulWidget {
   const VocabularyScreen({super.key});
@@ -28,222 +28,121 @@ class VocabularyScreen extends ConsumerStatefulWidget {
 }
 
 class _VocabularyScreenState extends ConsumerState<VocabularyScreen> {
-  _VocabTab _tab = _VocabTab.learning;
+  _Filter _filter = _Filter.all;
 
   @override
   Widget build(BuildContext context) {
-    ref.watch(themeModeProvider);  // subscribe để rebuild khi đổi theme
     final vocab = ref.watch(_vocabListProvider);
     final stats = ref.watch(_vocabStatsProvider);
     return Scaffold(
+      backgroundColor: const Color(0xFFF7F5F0),
       bottomNavigationBar: const MainBottomNav(currentIndex: 3),
-      body: Container(
-        decoration: BoxDecoration(gradient: AppColors.backgroundGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildHeader(context),
-              // Review banner — luôn hiện, có 2 trạng thái (due / done)
-              stats.maybeWhen(
-                data: (s) => s.total > 0
-                    ? Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                        child: _ReviewBanner(
-                          dueCount: s.dueNow,
-                          total: s.total,
-                          reviewedToday: s.reviewedToday,
-                          onTap: () async {
-                            await context.push(AppRoutes.review);
-                            ref.invalidate(_vocabListProvider);
-                            ref.invalidate(_vocabStatsProvider);
-                          },
-                        ),
-                      )
-                    : const SizedBox.shrink(),
-                orElse: () => const SizedBox.shrink(),
-              ),
-              // Tab toggle Learning / Mastered (Stitch style)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                child: _TabToggle(
-                  selected: _tab,
-                  learningCount: stats.maybeWhen(
-                    data: (s) => _countLearning(vocab.valueOrNull ?? []),
-                    orElse: () => 0,
-                  ),
-                  masteredCount: stats.maybeWhen(
-                    data: (s) => _countMastered(vocab.valueOrNull ?? []),
-                    orElse: () => 0,
-                  ),
-                  onChanged: (t) => setState(() => _tab = t),
+      body: SafeArea(
+        bottom: false,
+        child: RefreshIndicator(
+          color: AppColors.primary,
+          onRefresh: () async {
+            ref.invalidate(_vocabListProvider);
+            ref.invalidate(_vocabStatsProvider);
+            await ref.read(_vocabListProvider.future);
+          },
+          child: vocab.when(
+            loading: () => const Center(
+                child: CircularProgressIndicator(color: AppColors.primary)),
+            error: (e, _) => Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  e is AppError ? e.message : 'Lỗi tải sổ tay',
+                  style: const TextStyle(color: AppColors.error),
+                  textAlign: TextAlign.center,
                 ),
               ),
-              Expanded(
-                child: RefreshIndicator(
-                  color: AppColors.primary,
-                  onRefresh: () async {
-                    ref.invalidate(_vocabListProvider);
-                    ref.invalidate(_vocabStatsProvider);
-                    await ref.read(_vocabListProvider.future);
-                  },
-                  child: vocab.when(
-                    loading: () => const Center(
-                        child: CircularProgressIndicator(
-                            color: AppColors.primary)),
-                    error: (e, _) => Center(
-                      child: Text(
-                        e is AppError ? e.message : 'Lỗi tải sổ tay',
-                        style: const TextStyle(color: AppColors.error),
-                      ),
-                    ),
-                    data: (list) {
-                      if (list.isEmpty) return _emptyState();
-                      final filtered = list.where(_matchesTab).toList();
-                      if (filtered.isEmpty) return _emptyTabState();
-                      return _buildGrid(context, filtered);
+            ),
+            data: (list) {
+              final dueCount = stats.maybeWhen(
+                data: (s) => s.dueNow,
+                orElse: () => list.where((v) => v.isDueForReview).length,
+              );
+              final filtered = _applyFilter(list);
+              return ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                children: [
+                  _Header(total: list.length),
+                  const SizedBox(height: 16),
+                  _ReviewBanner(
+                    dueCount: dueCount,
+                    total: list.length,
+                    onTap: () async {
+                      await context.push(AppRoutes.review);
+                      ref.invalidate(_vocabListProvider);
+                      ref.invalidate(_vocabStatsProvider);
                     },
                   ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  bool _matchesTab(Vocabulary v) {
-    final mastered = _isMastered(v);
-    return _tab == _VocabTab.mastered ? mastered : !mastered;
-  }
-
-  Widget _buildHeader(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-      child: Row(
-        children: [
-          Text('Sổ tay từ vựng',
-              style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.textPrimary,
-                  letterSpacing: -0.5)),
-        ],
-      ),
-    );
-  }
-
-  Widget _emptyState() {
-    return LayoutBuilder(
-      builder: (context, constraints) => SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        child: ConstrainedBox(
-          constraints: BoxConstraints(minHeight: constraints.maxHeight),
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(40),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 80,
-                    height: 80,
-                    decoration: BoxDecoration(
-                      gradient: AppColors.primaryGradient,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Icon(Icons.menu_book,
-                        color: Colors.white, size: 40),
-                  ),
                   const SizedBox(height: 16),
-                  Text('Sổ tay đang trống',
-                      style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textPrimary)),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Khi chat với AI, bấm 🔖 trên tin nhắn để lưu từ vào sổ tay.\nAI sẽ tự tạo định nghĩa + ví dụ.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                        color: AppColors.textSecondary, fontSize: 13),
+                  _FilterChips(
+                    selected: _filter,
+                    counts: _countByFilter(list),
+                    onChanged: (f) => setState(() => _filter = f),
                   ),
+                  const SizedBox(height: 14),
+                  if (list.isEmpty)
+                    _EmptyState()
+                  else if (filtered.isEmpty)
+                    _EmptyFilterState(filter: _filter)
+                  else
+                    ...filtered.map((v) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _VocabListItem(
+                            vocab: v,
+                            onTap: () => _showDetail(context, v),
+                            onLongPress: () => _confirmDelete(context, v),
+                          ),
+                        )),
                 ],
-              ),
-            ),
+              );
+            },
           ),
         ),
       ),
     );
   }
 
-  Widget _emptyTabState() {
-    final msg = _tab == _VocabTab.mastered
-        ? 'Chưa có từ nào thuộc nhóm "Thành thạo"'
-        : 'Tất cả từ đã thuộc rồi 🎉';
-    final sub = _tab == _VocabTab.mastered
-        ? 'Ôn thường xuyên để đẩy từ lên mức thành thạo'
-        : 'Lưu thêm từ mới khi chat để học tiếp';
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              _tab == _VocabTab.mastered
-                  ? Icons.emoji_events_outlined
-                  : Icons.school_outlined,
-              color: AppColors.textTertiary,
-              size: 48,
-            ),
-            const SizedBox(height: 12),
-            Text(msg,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-            Text(sub,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: AppColors.textSecondary, fontSize: 12)),
-          ],
-        ),
-      ),
-    );
+  List<Vocabulary> _applyFilter(List<Vocabulary> all) {
+    switch (_filter) {
+      case _Filter.all:
+        return all;
+      case _Filter.due:
+        return all.where((v) => v.isDueForReview).toList();
+      case _Filter.mastered:
+        return all.where(_isMastered).toList();
+      case _Filter.fresh:
+        return all.where((v) => v.repetitions == 0).toList();
+      case _Filter.hard:
+        return all.where((v) => v.easeFactor < 2.0).toList();
+    }
   }
 
-  Widget _buildGrid(BuildContext context, List<Vocabulary> list) {
-    return GridView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      physics: const AlwaysScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        // childAspectRatio chọn 0.82 để card cao gần vuông, có chỗ cho def 3-4 dòng
-        childAspectRatio: 0.82,
-      ),
-      itemCount: list.length,
-      itemBuilder: (_, i) => _VocabCard(
-        vocab: list[i],
-        onTap: () => _showDetail(context, list[i]),
-        onLongPress: () => _confirmDelete(context, list[i]),
-      ),
-    );
+  Map<_Filter, int> _countByFilter(List<Vocabulary> all) {
+    return {
+      _Filter.all: all.length,
+      _Filter.due: all.where((v) => v.isDueForReview).length,
+      _Filter.mastered: all.where(_isMastered).length,
+      _Filter.fresh: all.where((v) => v.repetitions == 0).length,
+      _Filter.hard: all.where((v) => v.easeFactor < 2.0).length,
+    };
   }
 
   Future<void> _confirmDelete(BuildContext context, Vocabulary v) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: Text('Xoá từ này?',
-            style: TextStyle(color: AppColors.textPrimary)),
+        backgroundColor: Colors.white,
+        title: const Text('Xoá từ này?',
+            style: TextStyle(color: AppColors.navy)),
         content: Text('Xoá "${v.word}" khỏi sổ tay?',
-            style: TextStyle(color: AppColors.textSecondary)),
+            style: const TextStyle(color: Color(0xFF5C5870))),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
@@ -271,14 +170,14 @@ class _VocabularyScreenState extends ConsumerState<VocabularyScreen> {
   void _showDetail(BuildContext context, Vocabulary vocab) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppColors.surface,
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       isScrollControlled: true,
       builder: (ctx) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -289,7 +188,7 @@ class _VocabularyScreenState extends ConsumerState<VocabularyScreen> {
                   height: 4,
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: AppColors.border,
+                    color: const Color(0xFFE6E4EC),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -303,43 +202,35 @@ class _VocabularyScreenState extends ConsumerState<VocabularyScreen> {
                     child: Text(vocab.word,
                         style: const TextStyle(
                             fontSize: 22,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.primary)),
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.navy)),
                   ),
                 ],
               ),
               const SizedBox(height: 16),
               if (vocab.definition != null) ...[
-                Text('Định nghĩa',
-                    style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-                const SizedBox(height: 4),
+                const _SectionEyebrow('NGHĨA'),
+                const SizedBox(height: 6),
                 Text(vocab.definition!,
-                    style: TextStyle(
-                        color: AppColors.textPrimary,
-                        fontSize: 14,
+                    style: const TextStyle(
+                        color: AppColors.navy,
+                        fontSize: 15,
                         height: 1.5)),
                 const SizedBox(height: 16),
               ],
               if (vocab.example != null) ...[
-                Text('Ví dụ',
-                    style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600)),
-                const SizedBox(height: 4),
+                const _SectionEyebrow('VÍ DỤ'),
+                const SizedBox(height: 6),
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: AppColors.surfaceLight,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: AppColors.border),
+                    color: const Color(0xFFFFF5EF),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFFE0D0)),
                   ),
                   child: Text(vocab.example!,
-                      style: TextStyle(
-                          color: AppColors.textPrimary,
+                      style: const TextStyle(
+                          color: AppColors.navy,
                           fontSize: 14,
                           height: 1.5,
                           fontStyle: FontStyle.italic)),
@@ -354,25 +245,583 @@ class _VocabularyScreenState extends ConsumerState<VocabularyScreen> {
   }
 }
 
-// ==========================================================
-// Helpers — mastery progress + mastered classification
-// Logic khớp với backend stats: mastered = rep>=3 AND interval>=21
-// ==========================================================
+// ============================================================
+// Header — eyebrow + h1 + count + add button
+// ============================================================
+class _Header extends StatelessWidget {
+  final int total;
+  const _Header({required this.total});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'TỪ VỰNG CỦA BẠN',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.primaryDark,
+                  letterSpacing: 1.4,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  const Text(
+                    'Sổ tay ',
+                    style: TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.navy,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                  Text(
+                    '$total',
+                    style: const TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.primary,
+                      letterSpacing: -0.5,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        // Add button — placeholder, future: open add-word sheet
+        Material(
+          color: AppColors.navy,
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Thêm từ thủ công — sắp ra mắt'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+            },
+            child: const SizedBox(
+              width: 44,
+              height: 44,
+              child: Icon(Icons.add, color: Colors.white, size: 22),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// Review banner — progress circle + due count + start button
+// ============================================================
+class _ReviewBanner extends StatelessWidget {
+  final int dueCount;
+  final int total;
+  final VoidCallback onTap;
+  const _ReviewBanner({
+    required this.dueCount,
+    required this.total,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasDue = dueCount > 0;
+    final progress =
+        total == 0 ? 0.0 : (1.0 - dueCount / total).clamp(0.0, 1.0);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE6E4EC)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.navy.withValues(alpha: 0.04),
+            offset: const Offset(0, 4),
+            blurRadius: 12,
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Progress ring với số ở giữa
+          SizedBox(
+            width: 56,
+            height: 56,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                SizedBox(
+                  width: 56,
+                  height: 56,
+                  child: CircularProgressIndicator(
+                    value: progress,
+                    strokeWidth: 5,
+                    strokeCap: StrokeCap.round,
+                    backgroundColor: const Color(0xFFFFE0D0),
+                    valueColor:
+                        AlwaysStoppedAnimation(AppColors.primary),
+                  ),
+                ),
+                Text(
+                  '$dueCount',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primary,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  hasDue
+                      ? '$dueCount thẻ chờ ôn'
+                      : 'Đã ôn xong hôm nay',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.navy,
+                    letterSpacing: -0.2,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  hasDue
+                      ? 'Spaced repetition · ~${(dueCount * 0.3).ceil()} phút'
+                      : 'Quay lại sau hoặc ôn ngẫu nhiên',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF8C879E),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          ElevatedButton(
+            onPressed: onTap,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14)),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  hasDue ? 'Bắt đầu' : 'Ôn',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.arrow_forward, size: 14),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Filter chips horizontal scroll
+// ============================================================
+class _FilterChips extends StatelessWidget {
+  final _Filter selected;
+  final Map<_Filter, int> counts;
+  final ValueChanged<_Filter> onChanged;
+  const _FilterChips({
+    required this.selected,
+    required this.counts,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final items = [
+      (_Filter.all, 'Tất cả'),
+      (_Filter.due, 'Đến hạn'),
+      (_Filter.mastered, 'Đã thuộc'),
+      (_Filter.fresh, 'Mới'),
+      (_Filter.hard, 'Khó'),
+    ];
+    return SizedBox(
+      height: 36,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: items.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (_, i) {
+          final (f, label) = items[i];
+          final isSel = f == selected;
+          final count = counts[f] ?? 0;
+          return InkWell(
+            onTap: () => onChanged(f),
+            borderRadius: BorderRadius.circular(20),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: isSel ? AppColors.navy : Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                    color: isSel
+                        ? AppColors.navy
+                        : const Color(0xFFE6E4EC)),
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: isSel ? Colors.white : AppColors.navy,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: isSel
+                          ? Colors.white.withValues(alpha: 0.22)
+                          : const Color(0xFFFFF1EC),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '$count',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: isSel ? Colors.white : AppColors.primary,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ============================================================
+// List item — progress ring + word + def + chip + review time
+// ============================================================
+class _VocabListItem extends StatelessWidget {
+  final Vocabulary vocab;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+  const _VocabListItem({
+    required this.vocab,
+    required this.onTap,
+    required this.onLongPress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = _masteryProgress(vocab);
+    final ringColor = _ringColor(vocab);
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE6E4EC)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              // Progress ring 42×42
+              SizedBox(
+                width: 42,
+                height: 42,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(
+                      width: 42,
+                      height: 42,
+                      child: CircularProgressIndicator(
+                        value: progress,
+                        strokeWidth: 4,
+                        strokeCap: StrokeCap.round,
+                        backgroundColor: const Color(0xFFEFEDE6),
+                        valueColor: AlwaysStoppedAnimation(ringColor),
+                      ),
+                    ),
+                    Icon(
+                      Icons.bookmark_rounded,
+                      size: 14,
+                      color: ringColor,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Word + definition
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            vocab.word,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.navy,
+                              letterSpacing: -0.2,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          vocab.language.toLowerCase(),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF8C879E),
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      vocab.definition ?? '—',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF5C5870),
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              // Trailing: review time + chip
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: ringColor.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _levelLabel(vocab),
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        color: ringColor,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _nextReviewLabel(vocab),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF8C879E),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Empty states
+// ============================================================
+class _EmptyState extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
+      child: Column(
+        children: [
+          Container(
+            width: 72,
+            height: 72,
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF1EC),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            alignment: Alignment.center,
+            child: const Text('📚', style: TextStyle(fontSize: 36)),
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'Sổ tay còn trống',
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+              color: AppColors.navy,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Bấm 🤖 "AI gợi ý từ" trên tin nhắn AI để lưu vào sổ tay tự động',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, color: Color(0xFF5C5870)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyFilterState extends StatelessWidget {
+  final _Filter filter;
+  const _EmptyFilterState({required this.filter});
+
+  String _msg() {
+    switch (filter) {
+      case _Filter.due:
+        return 'Không có từ nào đến hạn ôn.';
+      case _Filter.mastered:
+        return 'Chưa có từ nào đã thuộc.';
+      case _Filter.fresh:
+        return 'Không có từ mới chưa ôn.';
+      case _Filter.hard:
+        return 'Không có từ nào khó.';
+      case _Filter.all:
+        return 'Trống.';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 30),
+      child: Center(
+        child: Text(
+          _msg(),
+          style: const TextStyle(fontSize: 13, color: Color(0xFF8C879E)),
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionEyebrow extends StatelessWidget {
+  final String text;
+  const _SectionEyebrow(this.text);
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: TextStyle(
+        fontSize: 10,
+        fontWeight: FontWeight.w800,
+        color: AppColors.primaryDark,
+        letterSpacing: 1.4,
+      ),
+    );
+  }
+}
+
+// ============================================================
+// Helpers — mastery progress + level
+// Logic khớp backend stats: mastered = rep>=3 AND interval>=21
+// ============================================================
 double _masteryProgress(Vocabulary v) {
   if (v.repetitions == 0) return 0.05;
   if (v.repetitions == 1) return 0.25;
   if (v.repetitions == 2) return 0.50;
-  // rep >= 3 — kết hợp interval để chia 60-100%
   final intervalFactor = (v.intervalDays / 30).clamp(0.0, 1.0);
   return (0.60 + intervalFactor * 0.40).clamp(0.0, 1.0);
 }
 
-bool _isMastered(Vocabulary v) => v.repetitions >= 3 && v.intervalDays >= 21;
+bool _isMastered(Vocabulary v) =>
+    v.repetitions >= 3 && v.intervalDays >= 21;
 
-int _countLearning(List<Vocabulary> all) =>
-    all.where((v) => !_isMastered(v)).length;
-int _countMastered(List<Vocabulary> all) =>
-    all.where(_isMastered).length;
+/// Ring color theo trạng thái: yellow=new, green=mastered, rose=hard, sun=mid
+Color _ringColor(Vocabulary v) {
+  if (_isMastered(v)) return const Color(0xFF2A6A52); // forest
+  if (v.easeFactor < 2.0) return const Color(0xFFE55436); // rose/coral
+  if (v.repetitions == 0) return const Color(0xFFFFB04A); // sun
+  return AppColors.primary; // coral default
+}
+
+String _levelLabel(Vocabulary v) {
+  // Heuristic: estimate CEFR-ish from EF + repetitions
+  if (_isMastered(v)) return 'C1';
+  if (v.repetitions >= 2) return 'B2';
+  if (v.repetitions >= 1) return 'B1';
+  return 'A2';
+}
+
+String _nextReviewLabel(Vocabulary v) {
+  final next = v.nextReviewAt;
+  if (next == null) return 'Mới';
+  final now = DateTime.now();
+  if (next.isBefore(now)) return 'Hôm nay';
+  final diff = next.difference(now);
+  if (diff.inHours < 24) return 'Hôm nay';
+  if (diff.inDays == 1) return 'Ngày mai';
+  if (diff.inDays < 7) return '${diff.inDays} ngày';
+  if (diff.inDays < 30) {
+    final weeks = (diff.inDays / 7).round();
+    return '$weeks tuần';
+  }
+  final months = (diff.inDays / 30).round();
+  return '$months tháng';
+}
 
 String _langFlag(String code) {
   switch (code.toLowerCase()) {
@@ -394,277 +843,5 @@ String _langFlag(String code) {
       return '🇩🇪';
     default:
       return '🌐';
-  }
-}
-
-// ==========================================================
-// Tab toggle — pill segmented control giống Stitch
-// ==========================================================
-class _TabToggle extends StatelessWidget {
-  final _VocabTab selected;
-  final int learningCount;
-  final int masteredCount;
-  final ValueChanged<_VocabTab> onChanged;
-  const _TabToggle({
-    required this.selected,
-    required this.learningCount,
-    required this.masteredCount,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceLight,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.border, width: 0.5),
-      ),
-      child: Row(
-        children: [
-          _buildSegment(
-            label: 'Đang học',
-            count: learningCount,
-            isSelected: selected == _VocabTab.learning,
-            onTap: () => onChanged(_VocabTab.learning),
-          ),
-          _buildSegment(
-            label: 'Thành thạo',
-            count: masteredCount,
-            isSelected: selected == _VocabTab.mastered,
-            onTap: () => onChanged(_VocabTab.mastered),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSegment({
-    required String label,
-    required int count,
-    required bool isSelected,
-    required VoidCallback onTap,
-  }) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? AppColors.primaryLight.withValues(alpha: 0.18)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                isSelected
-                    ? Icons.check_circle
-                    : Icons.radio_button_unchecked,
-                size: 16,
-                color: isSelected ? AppColors.primary : AppColors.textTertiary,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                count > 0 ? '$label ($count)' : label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: isSelected
-                      ? AppColors.primary
-                      : AppColors.textSecondary,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ==========================================================
-// Card từ vựng — style Stitch: word blue + def + progress bar
-// ==========================================================
-class _VocabCard extends StatelessWidget {
-  final Vocabulary vocab;
-  final VoidCallback onTap;
-  final VoidCallback onLongPress;
-  const _VocabCard({
-    required this.vocab,
-    required this.onTap,
-    required this.onLongPress,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final progress = _masteryProgress(vocab);
-    final pct = (progress * 100).round();
-
-    return Material(
-      color: AppColors.surfaceCard,
-      borderRadius: BorderRadius.circular(16),
-      // Soft shadow xuống dưới
-      shadowColor: AppColors.textPrimary.withValues(alpha: 0.06),
-      elevation: 2,
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Word (blue, bold)
-              Text(
-                vocab.word,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: AppColors.primary,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 6),
-              // Definition (max 4 dòng để vừa với childAspectRatio 0.82)
-              Expanded(
-                child: Text(
-                  vocab.definition ?? '—',
-                  maxLines: 4,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 13,
-                    height: 1.35,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              // Progress bar + % + flag
-              Row(
-                children: [
-                  Expanded(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: LinearProgressIndicator(
-                        value: progress,
-                        minHeight: 6,
-                        backgroundColor: AppColors.surfaceLight,
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                            AppColors.primaryLight),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '$pct%',
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ReviewBanner extends StatelessWidget {
-  final int dueCount;
-  final int total;
-  final int reviewedToday;
-  final VoidCallback onTap;
-  const _ReviewBanner({
-    required this.dueCount,
-    required this.total,
-    required this.reviewedToday,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final hasDue = dueCount > 0;
-    final gradient =
-        hasDue ? AppColors.primaryGradient : AppColors.cardGradient3;
-    final shadowColor =
-        hasDue ? AppColors.primary : const Color(0xFF4FACFE);
-    final title = hasDue
-        ? '$dueCount từ cần ôn hôm nay'
-        : 'Đã ôn xong hôm nay 🎉';
-    final subtitle = hasDue
-        ? 'Đã ôn $reviewedToday / Tổng $total từ'
-        : 'Có $total từ trong sổ tay • Ôn ngẫu nhiên?';
-    final icon = hasDue ? Icons.school : Icons.shuffle;
-
-    return Material(
-      borderRadius: BorderRadius.circular(16),
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            gradient: gradient,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: shadowColor.withValues(alpha: 0.25),
-                blurRadius: 16,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Icon(icon, color: Colors.white, size: 26),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.white.withValues(alpha: 0.85)),
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(Icons.arrow_forward, color: Colors.white, size: 22),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }
