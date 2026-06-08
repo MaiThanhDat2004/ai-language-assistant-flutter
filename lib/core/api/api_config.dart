@@ -4,15 +4,16 @@ import 'dart:io' show Platform;
 class ApiConfig {
   ApiConfig._();
 
-  // Backend URL theo platform:
-  // - Web/Windows/macOS/iOS sim: http://localhost:8000
-  // - Android emulator:          http://10.0.2.2:8000
-  // - Thiết bị thật:             http://<IP-máy-bạn>:8000
   static String get baseUrl {
     if (kIsWeb) return 'http://localhost:8000';
+
     try {
-      if (Platform.isAndroid) return 'http://10.0.2.2:8000';
+      if (Platform.isAndroid) {
+        // Điện thoại thật cùng mạng với laptop (hiện: hotspot 4G — laptop 192.168.100.63)
+        return 'http://192.168.100.63:8000';
+      }
     } catch (_) {}
+
     return 'http://localhost:8000';
   }
 

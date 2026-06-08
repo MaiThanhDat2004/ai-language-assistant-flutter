@@ -16,11 +16,15 @@ class WelcomeScreen extends StatelessWidget {
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
+            child: CustomScrollView(
+              slivers: [
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
                   const SizedBox(height: 16),
                   const _Header(),
                   const SizedBox(height: 36),
@@ -48,8 +52,11 @@ class WelcomeScreen extends StatelessWidget {
                     onPressed: () => context.go(AppRoutes.login),
                   ),
                   const SizedBox(height: 16),
-                ],
-              ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -93,12 +100,14 @@ class _LanguagePillsCollage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, c) {
-        final w = c.maxWidth;
-        // Tỷ lệ pill so với 342px của thiết kế gốc — scale theo width hiện tại.
-        double s(double px) => px * w / 342;
-        return SizedBox(
+    // Width khả dụng = min(screen, 420) − 48px padding ngang của màn Welcome.
+    // KHÔNG dùng LayoutBuilder: nó không trả intrinsic dimension nên sẽ làm
+    // SliverFillRemaining(hasScrollBody: false) ở màn Welcome crash khi đo cao.
+    final screenW = MediaQuery.sizeOf(context).width;
+    final w = (screenW < 420 ? screenW : 420) - 48;
+    // Tỷ lệ pill so với 342px của thiết kế gốc — scale theo width hiện tại.
+    double s(double px) => px * w / 342;
+    return SizedBox(
           height: s(260),
           child: Stack(
             children: [
@@ -182,8 +191,6 @@ class _LanguagePillsCollage extends StatelessWidget {
             ],
           ),
         );
-      },
-    );
   }
 }
 

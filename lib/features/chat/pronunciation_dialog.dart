@@ -247,12 +247,18 @@ class _PronunciationDialogState extends ConsumerState<PronunciationDialog> {
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: AppColors.border, width: 0.5),
                 ),
-                child: Text(
-                  widget.referenceText,
-                  style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 14,
-                    height: 1.5,
+                child: ConstrainedBox(
+                  // Câu dài → cuộn trong ô tối đa 120px thay vì đẩy dialog tràn.
+                  constraints: const BoxConstraints(maxHeight: 120),
+                  child: SingleChildScrollView(
+                    child: Text(
+                      widget.referenceText,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 14,
+                        height: 1.5,
+                      ),
+                    ),
                   ),
                 ),
               ),

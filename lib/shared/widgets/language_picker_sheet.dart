@@ -19,6 +19,7 @@ Future<String?> pickLanguage(
   return showModalBottomSheet<String>(
     context: context,
     backgroundColor: Colors.white,
+    isScrollControlled: true,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
     ),
@@ -34,42 +35,51 @@ class _LanguagePickerSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final langs = ref.watch(languagesProvider);
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE6E4EC),
-                  borderRadius: BorderRadius.circular(2),
+      child: ConstrainedBox(
+        // Giới hạn 75% chiều cao màn — chip ngôn ngữ scroll bên trong thay vì
+        // tràn (sọc overflow) khi 12 ngôn ngữ wrap thành nhiều dòng trên điện
+        // thoại nhỏ / font scale lớn.
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE6E4EC),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
-            ),
-            Text(
-              'Chọn ngôn ngữ trả lời',
-              style: GoogleFonts.beVietnamPro(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                color: AppColors.navy,
-                letterSpacing: -0.4,
+              Text(
+                'Chọn ngôn ngữ trả lời',
+                style: GoogleFonts.beVietnamPro(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.navy,
+                  letterSpacing: -0.4,
+                ),
               ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'AI sẽ trả lời bằng ngôn ngữ bạn chọn.',
-              style: GoogleFonts.beVietnamPro(
-                fontSize: 13,
-                color: const Color(0xFF8C879E),
+              const SizedBox(height: 4),
+              Text(
+                'AI sẽ trả lời bằng ngôn ngữ bạn chọn.',
+                style: GoogleFonts.beVietnamPro(
+                  fontSize: 13,
+                  color: const Color(0xFF8C879E),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            langs.when(
+              const SizedBox(height: 16),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: langs.when(
               loading: () => const Padding(
                 padding: EdgeInsets.all(20),
                 child: Center(
@@ -99,8 +109,11 @@ class _LanguagePickerSheet extends ConsumerWidget {
                       .toList(),
                 );
               },
-            ),
-          ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

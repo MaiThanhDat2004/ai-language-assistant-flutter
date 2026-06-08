@@ -140,4 +140,26 @@ class AuthApi {
       throw AppError.fromDio(e);
     }
   }
+
+  /// Đặt lại mật khẩu self-service: phải khớp CẢ username lẫn email của cùng
+  /// 1 tài khoản (không cần email server). Trả message thành công từ backend.
+  Future<void> resetPassword({
+    required String username,
+    required String email,
+    required String newPassword,
+  }) async {
+    try {
+      await _client.dio.post(
+        '/auth/reset-password',
+        data: {
+          'username': username,
+          'email': email,
+          'new_password': newPassword,
+        },
+        options: Options(extra: {'skipAuth': true}),
+      );
+    } on DioException catch (e) {
+      throw AppError.fromDio(e);
+    }
+  }
 }

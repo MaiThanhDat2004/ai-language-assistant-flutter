@@ -23,6 +23,20 @@ class AppError implements Exception {
           statusCode: response.statusCode,
         );
       }
+      // FastAPI mặc định trả {"detail": "..."} khi raise HTTPException trực
+      // tiếp (router auth/login không bọc envelope). Ưu tiên hiện message này
+      // thay vì câu chung chung — vd sai mật khẩu phải thấy đúng lý do, không
+      // phải "Phiên đăng nhập đã hết hạn".
+      if (data is Map<String, dynamic> && data['detail'] is String) {
+        final detail = (data['detail'] as String).trim();
+        if (detail.isNotEmpty) {
+          return AppError(
+            code: 'HTTP_${response.statusCode}',
+            message: detail,
+            statusCode: response.statusCode,
+          );
+        }
+      }
       return AppError(
         code: 'HTTP_${response.statusCode}',
         message: _statusMessage(response.statusCode),

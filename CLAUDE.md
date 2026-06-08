@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # AI Assistant Language — Flutter Frontend
 
 App Flutter cho hệ thống Trợ lý Ngôn ngữ AI (brand name **DLanguage**). Giao tiếp với backend FastAPI (cùng máy).
-Code Flutter nằm trong `flutter_application_1/` (KHÔNG ở root — các file `*.html` ở root + trong `flutter_application_1/` là mockup design canvas tham khảo, không build. Đã `.gitignore` `/*.html`).
+
+> **Lưu ý về checkout này:** Project Flutter nằm **trực tiếp** trong thư mục `ai-language-assistant-flutter/` (chính là thư mục chứa file CLAUDE.md này) — KHÔNG có thư mục con `flutter_application_1/`. Tên package trong `pubspec.yaml` vẫn là `flutter_application_1` (import dùng `package:flutter_application_1/...`), nhưng thư mục dự án là `ai-language-assistant-flutter/`. Mọi lệnh `flutter` chạy ngay tại thư mục này, KHÔNG cần `cd flutter_application_1`.
 
 ## Stack
 - **Flutter 3.11+** / Dart, light/dark theme toggle + Google Fonts **Be Vietnam Pro** (đẹp với tiếng Việt)
@@ -20,7 +21,7 @@ Code Flutter nằm trong `flutter_application_1/` (KHÔNG ở root — các file
 
 ## Cấu trúc
 ```
-flutter_application_1/
+ai-language-assistant-flutter/   # = thư mục dự án Flutter (chứa CLAUDE.md, pubspec.yaml)
   assets/images/        # logo.png (DLanguage)
   lib/
     core/
@@ -53,6 +54,7 @@ Các model audio (STTResult, PronunciationResult/Word/Attempt/Stats/Coaching) + 
 - **Base URL theo platform** (xem `core/api/api_config.dart`):
   - Web/Windows/macOS/iOS sim: `http://localhost:8000`
   - Android emulator: `http://10.0.2.2:8000`
+  - **Thiết bị Android thật**: hiện hardcode `http://192.168.1.196:8000` — đổi sang IP LAN của máy chạy backend
 - **CORS**: `.env` đặt `CORS_ORIGINS=*` cho dev
 
 ## ⚠️ Quy ước quan trọng (đã từng bị bug)
@@ -198,10 +200,10 @@ Project bật strict lints. Trước khi commit, các pattern sau sẽ tạo inf
 ## Lệnh thường dùng
 
 ```powershell
-# Cài deps + chạy
-cd flutter_application_1
+# Cài deps + chạy (chạy ngay tại thư mục dự án ai-language-assistant-flutter)
 flutter pub get
-flutter run -d chrome      # hoặc -d windows
+flutter run -d chrome      # hoặc -d windows / -d <android-device-id>
+flutter devices            # liệt kê device + ID khi cài lên điện thoại thật
 
 # Kiểm lỗi tĩnh
 flutter analyze
@@ -227,8 +229,9 @@ ollama serve
 3. Mở terminal backend → xem stack trace Python
 4. **Đừng đổi code mù** khi chưa biết lỗi backend hay frontend
 
-## Memory (`C:\Users\PC\.claude\projects\d--flutte-Assisant-language\memory\`)
-Project có persistent memory cross-session. Index ở `MEMORY.md`. Đọc các file dưới đây khi cần context:
+## Memory (`C:\Users\sonng\.claude\projects\d--Frontend-assist\memory\`)
+Project có persistent memory cross-session. Index ở `MEMORY.md`.
+> **Lưu ý:** thư mục memory trên máy này hiện đang **trống** — các file dưới đây được tạo trên máy cũ (`C:\Users\PC\...`) và CHƯA được đồng bộ sang đây. Khi cần dùng phải tạo lại.
 - `user_profile.md` — Mai Thành Đạt, K67-HTTT, ĐH Lâm Nghiệp, GVHD ThS. Mai Hà An
 - `project_status.md` — Trạng thái 18 priorities + contract enforcement architecture (4 layers)
 - `project_backend.md` — FastAPI endpoints, gemma2:2b, migrations 0001-0007

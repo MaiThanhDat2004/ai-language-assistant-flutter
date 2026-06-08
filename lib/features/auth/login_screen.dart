@@ -140,9 +140,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
-                        onPressed: _loading
-                            ? null
-                            : () => _showSoon(context, 'Quên mật khẩu'),
+                        onPressed: _loading ? null : _showForgotPassword,
                         style: TextButton.styleFrom(
                           foregroundColor: AppColors.primaryDark,
                           padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -215,6 +213,184 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   void _showSoon(BuildContext context, String name) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('$name — tính năng đang phát triển')),
+    );
+  }
+
+  // ============================================================
+  // Quên mật khẩu — self-service reset không cần email server.
+  // User xác minh bằng username + email (phải khớp cùng tài khoản) → đặt
+  // mật khẩu mới. Backend POST /auth/reset-password.
+  // ============================================================
+  Future<void> _showForgotPassword() async {
+    final userCtrl = TextEditingController();
+    final emailCtrl = TextEditingController();
+    final passCtrl = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    bool loading = false;
+    String? error;
+    bool obscure = true;
+
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFFF2F2F7),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) {
+        return StatefulBuilder(
+          builder: (sheetCtx, setSheet) {
+            Future<void> submit() async {
+              if (loading) return;
+              if (!formKey.currentState!.validate()) return;
+              setSheet(() {
+                loading = true;
+                error = null;
+              });
+              try {
+                await ref.read(authApiProvider).resetPassword(
+                      username: userCtrl.text.trim(),
+                      email: emailCtrl.text.trim(),
+                      newPassword: passCtrl.text,
+                    );
+                if (!sheetCtx.mounted) return;
+                Navigator.of(sheetCtx).pop();
+                _usernameCtrl.text = userCtrl.text.trim();
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                        'Đặt lại mật khẩu thành công. Hãy đăng nhập lại.'),
+                    backgroundColor: Color(0xFF2A6A52),
+                  ),
+                );
+              } on AppError catch (e) {
+                setSheet(() {
+                  loading = false;
+                  error = e.message;
+                });
+              } catch (_) {
+                setSheet(() {
+                  loading = false;
+                  error = 'Đã có lỗi xảy ra, thử lại';
+                });
+              }
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(sheetCtx).viewInsets.bottom,
+                left: 20,
+                right: 20,
+                top: 12,
+              ),
+              child: SingleChildScrollView(
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 40,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE6E4EC),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                      Text(
+                        'Đặt lại mật khẩu',
+                        style: GoogleFonts.beVietnamPro(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.navy,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Nhập tên đăng nhập và email của tài khoản để xác minh, '
+                        'rồi đặt mật khẩu mới.',
+                        style: GoogleFonts.beVietnamPro(
+                          fontSize: 13,
+                          height: 1.4,
+                          color: const Color(0xFF5C5870),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      _FieldLabel('TÊN ĐĂNG NHẬP'),
+                      const SizedBox(height: 8),
+                      _RoundedInput(
+                        controller: userCtrl,
+                        enabled: !loading,
+                        hint: 'Tên đăng nhập của bạn',
+                        validator: (v) => (v == null || v.trim().isEmpty)
+                            ? 'Nhập tên đăng nhập'
+                            : null,
+                      ),
+                      const SizedBox(height: 14),
+                      _FieldLabel('EMAIL'),
+                      const SizedBox(height: 8),
+                      _RoundedInput(
+                        controller: emailCtrl,
+                        enabled: !loading,
+                        hint: 'you@example.com',
+                        keyboardType: TextInputType.emailAddress,
+                        validator: (v) {
+                          final s = v?.trim() ?? '';
+                          if (s.isEmpty) return 'Nhập email';
+                          if (!s.contains('@') || !s.contains('.')) {
+                            return 'Email không hợp lệ';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 14),
+                      _FieldLabel('MẬT KHẨU MỚI'),
+                      const SizedBox(height: 8),
+                      _RoundedInput(
+                        controller: passCtrl,
+                        enabled: !loading,
+                        hint: 'Tối thiểu 8 ký tự',
+                        obscureText: obscure,
+                        suffix: IconButton(
+                          icon: Icon(
+                            obscure
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
+                            color: const Color(0xFF8C879E),
+                            size: 20,
+                          ),
+                          onPressed: () =>
+                              setSheet(() => obscure = !obscure),
+                        ),
+                        validator: (v) => (v == null || v.length < 8)
+                            ? 'Mật khẩu tối thiểu 8 ký tự'
+                            : null,
+                      ),
+                      if (error != null) ...[
+                        const SizedBox(height: 12),
+                        _ErrorBanner(error!),
+                      ],
+                      const SizedBox(height: 18),
+                      _PrimaryButton(
+                        label: 'Đặt lại mật khẩu',
+                        loading: loading,
+                        onPressed: submit,
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

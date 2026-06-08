@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../core/errors/app_error.dart';
-import '../../core/models/language.dart';
 import '../../core/models/session.dart';
 import '../../core/models/user.dart';
 import '../../core/router/app_router.dart';
@@ -11,6 +10,7 @@ import '../../core/theme/app_colors.dart';
 import '../../shared/providers/app_providers.dart';
 import '../../shared/utils/language_enforcement.dart';
 import '../../shared/utils/session_icon.dart';
+import '../../shared/widgets/language_picker_sheet.dart';
 import '../../shared/widgets/main_bottom_nav.dart';
 
 final _recentSessionsProvider =
@@ -253,136 +253,10 @@ class HomeScreen extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     String defaultLang,
-  ) async {
-    return showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-            child: Consumer(
-              builder: (ctx, ref, _) {
-                final langs = ref.watch(languagesProvider);
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 40,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 16),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE6E4EC),
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    Text(
-                      'Chọn ngôn ngữ trả lời',
-                      style: GoogleFonts.beVietnamPro(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.navy,
-                        letterSpacing: -0.4,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    langs.when(
-                      loading: () => const Padding(
-                        padding: EdgeInsets.all(20),
-                        child: Center(
-                            child: CircularProgressIndicator(
-                                color: AppColors.primary)),
-                      ),
-                      error: (_, _) => Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          _langChipFallback(ctx, 'vi', '🇻🇳 Tiếng Việt'),
-                          _langChipFallback(ctx, 'en', '🇬🇧 English'),
-                        ],
-                      ),
-                      data: (list) {
-                        final items = list.cast<Language>();
-                        return Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: items.map((l) {
-                            final sel = l.code == defaultLang;
-                            final flag = flagForLanguageCode(l.code);
-                            return InkWell(
-                              onTap: () => Navigator.of(ctx).pop(l.code),
-                              borderRadius: BorderRadius.circular(20),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: sel ? AppColors.primary : Colors.white,
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(
-                                    color: sel
-                                        ? AppColors.primary
-                                        : const Color(0xFFE6E4EC),
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(flag,
-                                        style: const TextStyle(fontSize: 16)),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      l.nativeName,
-                                      style: GoogleFonts.beVietnamPro(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                        color: sel
-                                            ? Colors.white
-                                            : AppColors.navy,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          }).toList(),
-                        );
-                      },
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _langChipFallback(BuildContext ctx, String code, String label) {
-    return InkWell(
-      onTap: () => Navigator.of(ctx).pop(code),
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: const Color(0xFFE6E4EC)),
-        ),
-        child: Text(label,
-            style: GoogleFonts.beVietnamPro(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: AppColors.navy,
-            )),
-      ),
-    );
+  ) {
+    // Dùng chung sheet với Templates — đã scroll-safe (ConstrainedBox 75% +
+    // SingleChildScrollView) nên không tràn khi 12 ngôn ngữ wrap nhiều dòng.
+    return pickLanguage(context, ref, defaultLang: defaultLang);
   }
 }
 

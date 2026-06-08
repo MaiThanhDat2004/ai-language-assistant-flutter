@@ -63,7 +63,8 @@ class _VoiceConversationScreenState
 
   // VAD settings
   static const _silenceThresholdDb = -35.0;     // dBFS — dưới này coi là im lặng
-  static const _silenceDuration = Duration(milliseconds: 1500);
+  // Thời gian im lặng trước khi chốt lượt nói — chỉnh được qua sheet "Chế độ".
+  Duration _silenceDuration = const Duration(milliseconds: 1500);
   static const _maxRecordDuration = Duration(seconds: 30);
 
   StreamSubscription<Amplitude>? _ampSub;
@@ -337,8 +338,19 @@ class _VoiceConversationScreenState
           audioBytes: audioBytes,
         );
       } catch (e) {
-        // TTS fail không fatal — vẫn loop lại
+        // TTS fail không fatal — vẫn loop lại, NHƯNG báo cho user biết vì sao
+        // im tiếng (trước đây chỉ debugPrint nên tưởng app hỏng).
         debugPrint('TTS failed: $e');
+        if (mounted && !_exiting) {
+          final msg = e is AppError ? e.message : e.toString();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Không phát được giọng nói: $msg'),
+              backgroundColor: AppColors.error,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
       }
 
       // Buffer 800ms sau khi TTS kết thúc để loa thực sự tắt — tránh mic
@@ -777,10 +789,116 @@ class _VoiceConversationScreenState
   }
 
   void _showModeSheet(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Tuỳ chọn chế độ — đang phát triển'),
-        duration: Duration(seconds: 2),
+    const options = [
+      ('Nhanh', 'AI trả lời ngay khi bạn vừa ngừng',
+          Duration(milliseconds: 800)),
+      ('Vừa', 'Cân bằng — khuyên dùng', Duration(milliseconds: 1500)),
+      ('Thư thả', 'Chờ lâu hơn, hợp khi bạn nói chậm',
+          Duration(milliseconds: 2500)),
+    ];
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE6E4EC),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const Text(
+                'Độ nhạy ngắt lời',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.navy,
+                  letterSpacing: -0.4,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Thời gian im lặng trước khi AI bắt đầu trả lời.',
+                style: TextStyle(fontSize: 13, color: Color(0xFF8C879E)),
+              ),
+              const SizedBox(height: 12),
+              for (final (label, desc, dur) in options)
+                _buildModeOption(ctx, label, desc, dur),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildModeOption(
+      BuildContext sheetCtx, String label, String desc, Duration dur) {
+    final selected = _silenceDuration == dur;
+    return InkWell(
+      onTap: () {
+        setState(() => _silenceDuration = dur);
+        Navigator.of(sheetCtx).pop();
+      },
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected
+              ? AppColors.primary.withValues(alpha: 0.08)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected ? AppColors.primary : const Color(0xFFE6E4EC),
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              selected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              color: selected ? AppColors.primary : const Color(0xFF8C879E),
+              size: 22,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: selected ? AppColors.primaryDark : AppColors.navy,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    desc,
+                    style: const TextStyle(
+                        fontSize: 12, color: Color(0xFF8C879E)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -143,7 +143,10 @@ class _AttemptDetailDialog extends StatelessWidget {
       backgroundColor: AppColors.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 480),
+        constraints: BoxConstraints(
+          maxWidth: 480,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+        ),
         child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(
@@ -185,6 +188,11 @@ class _AttemptDetailDialog extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 14),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
               Text(
                 'Câu cần đọc:',
                 style:
@@ -242,6 +250,11 @@ class _AttemptDetailDialog extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
               ],
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
               Row(
                 children: [
                   Expanded(

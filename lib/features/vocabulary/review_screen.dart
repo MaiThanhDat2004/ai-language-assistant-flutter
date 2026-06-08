@@ -746,7 +746,7 @@ class _CardSectionLabel extends StatelessWidget {
   }
 }
 
-class _TtsButton extends StatelessWidget {
+class _TtsButton extends ConsumerStatefulWidget {
   final String text;
   final String language;
   final bool compact;
@@ -757,26 +757,62 @@ class _TtsButton extends StatelessWidget {
   });
 
   @override
+  ConsumerState<_TtsButton> createState() => _TtsButtonState();
+}
+
+class _TtsButtonState extends ConsumerState<_TtsButton> {
+  bool _loading = false;
+
+  Future<void> _play() async {
+    final text = widget.text.trim();
+    if (_loading || text.isEmpty) return;
+    setState(() => _loading = true);
+    try {
+      final bytes = await ref.read(audioApiProvider).textToSpeech(
+            text: text,
+            languageCode: widget.language,
+          );
+      await ref.read(audioPlayerServiceProvider).play(
+            messageId: 'vocab-tts',
+            audioBytes: bytes,
+          );
+    } on AppError catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: AppColors.error),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Lỗi phát âm: $e'),
+            backgroundColor: AppColors.error),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final size = compact ? 32.0 : 36.0;
+    final size = widget.compact ? 32.0 : 36.0;
     return Material(
       color: AppColors.primary,
       shape: const CircleBorder(),
       child: InkWell(
         customBorder: const CircleBorder(),
-        onTap: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Phát TTS — đang phát triển'),
-              duration: Duration(seconds: 1),
-            ),
-          );
-        },
+        onTap: _loading ? null : _play,
         child: SizedBox(
           width: size,
           height: size,
-          child: const Icon(Icons.play_arrow_rounded,
-              color: Colors.white, size: 20),
+          child: _loading
+              ? const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : const Icon(Icons.play_arrow_rounded,
+                  color: Colors.white, size: 20),
         ),
       ),
     );
